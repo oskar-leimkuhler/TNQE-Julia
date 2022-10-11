@@ -2,7 +2,8 @@
 
 # Packages:
 import pyscf
-from pyscf import fci, ao2mo
+from pyscf import fci, ao2mo, lo
+from pyscf.tools import cubegen
 import numpy as np
 import h5py
 import datetime
@@ -10,73 +11,22 @@ import os
 import configparser
 
 
-# Parses the geometry specifications in the config file to generate a set of geometry strings to be passed to PySCF:
-def ParseGeometries(config):
-    
-    mconf = config['MOLECULE PROPERTIES']
-    gconf = config['GEOMETRIES']
-    
-    num_atoms = int(mconf['num_atoms'])
-    
-    # Atom property labels:
-    altype = [f'atom{i}type' for i in range(1,num_atoms+1)]
-    alx0 = [f'atom{i}x0' for i in range(1,num_atoms+1)]
-    aly0 = [f'atom{i}y0' for i in range(1,num_atoms+1)]
-    alz0 = [f'atom{i}z0' for i in range(1,num_atoms+1)]
-    alx1 = [f'atom{i}x1' for i in range(1,num_atoms+1)]
-    aly1 = [f'atom{i}y1' for i in range(1,num_atoms+1)]
-    alz1 = [f'atom{i}z1' for i in range(1,num_atoms+1)]
-    
-    atom_types = [mconf[altype[i]] for i in range(num_atoms)]
-    
-    if gconf.getboolean('geometry_range')==True:
-        
-        # Implement the range functionality
-        atom_positions = [ [float(gconf[alx0[i]]),float(gconf[aly0[i]]),float(gconf[alz0[i]])] for i in range(num_atoms)]
-        
-        geometry_string = ""
-        
-        for i in range(num_atoms):
-            geometry_string += atom_types[i]
-            
-            for coord in range(3):
-                geometry_string += " "
-                geometry_string += str(atom_positions[i][coord])
-                
-            geometry_string += "; "
-            
-        geometries = [geometry_string]
-    
-    else:
-        
-        atom_positions = [ [float(gconf[alx0[i]]),float(gconf[aly0[i]]),float(gconf[alz0[i]])] for i in range(num_atoms)]
-        
-        geometry_string = ""
-        
-        for i in range(num_atoms):
-            geometry_string += atom_types[i]
-            
-            for coord in range(3):
-                geometry_string += " "
-                geometry_string += str(atom_positions[i][coord])
-                
-            geometry_string += "; "
-            
-        geometries = [geometry_string]
-        
-    return geometries
-
-
 # Runs the PySCF calculations and saves the output to a HDF5 file:
-def RunPySCF(config):
+def RunPySCF(config, gen_cubes=False):
     
     mol_name = config['MOLECULE PROPERTIES']['mol_name']
+    mol_spin = config['MOLECULE PROPERTIES'].getint('mol_spin', fallback=0)
+    mol_charge = config['MOLECULE PROPERTIES'].getint('mol_charge', fallback=0)
     basis = config['CALCULATION PARAMETERS']['basis']
-    run_fci = config['CALCULATION PARAMETERS'].getboolean('run_fci')
+    run_rohf = config['CALCULATION PARAMETERS'].getboolean('run_rohf', fallback=False)
+    run_fci = config['CALCULATION PARAMETERS'].getboolean('run_fci', fallback=False)
+    loc_orbs = config['CALCULATION PARAMETERS'].getboolean('loc_orbs', fallback=False)
+    xyz_file = config['GEOMETRIES']['xyz_file']
     
-    geometries = ParseGeometries(config)
+    geometries = ["../configs/xyz_files/"+xyz_file]
     
     wd = os.getcwd()+"/../datasets/pyscf_data/"
+    wd_o = os.getcwd()+"/../datasets/orbs/"
     
     datestr = datetime.datetime.now()
     
@@ -89,22 +39,46 @@ def RunPySCF(config):
         f.create_dataset("geometries", data=geometries)
     
         for geometry in geometries:
+            
+            print(os.path.isfile(geometry))
 
-            mol_obj = pyscf.gto.M(atom=geometry, basis=basis)
-
-            rhf_obj = pyscf.scf.RHF(mol_obj)
+            mol_obj = pyscf.gto.M(atom=geometry)
+            mol_obj.basis = basis
+            mol_obj.charge = mol_charge
+            mol_obj.spin = mol_spin
+            
+            if run_rohf:
+                rhf_obj = pyscf.scf.ROHF(mol_obj)
+            else:
+                rhf_obj = pyscf.scf.RHF(mol_obj)
+            
             e_rhf = rhf_obj.kernel()
 
-            if run_fci==True:
+            if run_fci:
                 fci_obj = fci.FCI(rhf_obj)
                 e_fci = fci_obj.kernel()[0]
             else:
                 e_fci = "N/A"
-
+                
+            if loc_orbs:
+                # C matrix stores the AO to localized orbital coefficients
+                C = lo.pipek.PM(mol_obj).kernel(rhf_obj.mo_coeff)
+                # Split-localization:
+                """
+                nocc = sum(rhf_obj.mo_occ>0.0)
+                norb = len(rhf_obj.mo_occ)
+                C = np.zeros((norb,norb))
+                C[:,:nocc] = lo.pipek.PM(mol_obj).kernel(rhf_obj.mo_coeff[:,:nocc])
+                C[:,nocc:] = lo.pipek.PM(mol_obj).kernel(rhf_obj.mo_coeff[:,nocc:])
+                """
+                
             h1e = mol_obj.intor("int1e_kin") + mol_obj.intor("int1e_nuc")
             h2e = mol_obj.intor("int2e")
-
-            scf_c = rhf_obj.mo_coeff
+            
+            if loc_orbs:
+                scf_c = C
+            else:
+                scf_c = rhf_obj.mo_coeff
 
             h1e = scf_c.T @ h1e @ scf_c
             h2e = ao2mo.kernel(h2e, scf_c)
@@ -117,3 +91,13 @@ def RunPySCF(config):
             h2e_data = grp.create_dataset("h2e", data=h2e)
             nel_data = grp.create_dataset("nel", data=mol_obj.nelectron)
             nuc_data = grp.create_dataset("nuc", data=mol_obj.energy_nuc())
+            
+            if gen_cubes:
+                
+                dirpath_o = wd_o + mol_name + "_" + basis + "_" + datestr.strftime("%m%d%y%%%H%M%S")
+                
+                os.mkdir(dirpath_o)
+                
+                for i in range(scf_c.shape[1]):
+                    fstring = dirpath_o + '/' + str(i+1).zfill(3) + '.cube'
+                    cubegen.orbital(mol_obj, fstring, scf_c[:,i])

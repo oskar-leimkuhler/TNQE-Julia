@@ -4,65 +4,15 @@
 using ITensors
 
 
-# Returns an element of the SWAP tensor corresponding to i, j, i' and j':
-function SwapElement(i,j,ip,jp)
-    if ip==j && jp==i
-        return 1
-    else
-        return 0
-    end
-end
-
-
-# Builds the SWAP ITensor object between sites idx and idx+1:
-function BuildSwap(sites, idx)
-    
-    swap = ITensor(sites[idx],sites[idx+1],sites[idx]',sites[idx+1]')
-    
-    for i=1:2
-        for j=1:2
-            for ip=1:2
-                for jp=1:2
-                    swap[i,j,ip,jp] = SwapElement(i,j,ip,jp)
-                end
-            end
-        end
-    end
-    
-    return swap
-    
-end
-
-
-# Applies the SWAP tensor to the MPS with specified accuracy tolerance:
-function ApplySwap(psi, swap, idx, tol, maxdim)
-    
-    orthogonalize!(psi,idx)
-    
-    temp_tensor = (psi[idx] * psi[idx+1]) * swap
-    noprime!(temp_tensor)
-    
-    temp_inds = uniqueinds(psi[idx],psi[idx+1])
-    
-    U,S,V = svd(temp_tensor,temp_inds,cutoff=tol,maxdim=maxdim)
-    
-    psi[idx] = U
-    psi[idx+1] = S*V
-    
-    return psi
-    
-end
-
-
 # Generates index positions for a bubble/insertion sorting network to rearrange sites:
-function BubbleSort(ord1, ord2; spatial=false)
+function BubbleSort(ord1, ord2; spinpair=false)
     
-    if spatial==true
-        ord1c = Spatial2SpinOrd(ord1)
-        ord2c = Spatial2SpinOrd(ord2)
+    if spinpair==true
+        ord1c = deepcopy(Spatial2SpinOrd(ord1))
+        ord2c = deepcopy(Spatial2SpinOrd(ord2))
     else
-        ord1c = ord1
-        ord2c = ord2
+        ord1c = deepcopy(ord1)
+        ord2c = deepcopy(ord2)
     end
     
     N = size(ord2c,1)
@@ -83,26 +33,162 @@ function BubbleSort(ord1, ord2; spatial=false)
         end
     end
     
-    println(ord1c)
-    
     return swap_indices
     
 end
 
 
+# Builds the SWAP ITensor object between sites idx and idx+1:
+function BuildSwap(sites, idx; dim=2)
+    
+    swap_array = zeros((dim,dim,dim,dim))
+    
+    for i=1:dim, j=1:dim, ip=1:dim, jp=1:dim
+        swap_array[i,j,ip,jp] = Int(ip==j && jp==i)
+    end
+
+    swap = ITensor(swap_array, dag(sites[idx]),dag(sites[idx+1]),sites[idx]',sites[idx+1]')
+    
+    return swap
+    
+end
+
+
+# Builds the fermionic SWAP ITensor object between sites idx and idx+1:
+function BuildFermionicSwap(sites, idx; dim=2)
+    
+    fswap = [1 0 0 0;
+             0 0 1 0;
+             0 1 0 0;
+             0 0 0 -1]
+    
+    i2 = Matrix(I(2))
+    
+    if dim==2
+        swap_mat = fswap
+    elseif dim==4
+        swap_mat = kron(i2,kron(fswap,i2))*kron(fswap,fswap)*kron(i2,kron(fswap,i2)) 
+    end
+    
+    swap_array = reshape(swap_mat, (dim,dim,dim,dim))
+
+    swap = ITensor(swap_array, dag(sites[idx]),dag(sites[idx+1]),sites[idx]',sites[idx+1]')
+    
+    return swap
+    
+end
+
+
+# Applies the SWAP tensor to the MPS with specified accuracy tolerance:
+function ApplySwap(psi, swap, idx, tol, maxdim, mindim, alg)
+    
+    orthogonalize!(psi,idx)
+    
+    temp_tensor = (psi[idx] * psi[idx+1]) * swap
+    noprime!(temp_tensor)
+    
+    temp_inds = uniqueinds(psi[idx],psi[idx+1])
+    
+    U,S,V = svd(temp_tensor,temp_inds,cutoff=tol,maxdim=maxdim,mindim=mindim,alg=alg)
+    
+    psi[idx] = U
+    psi[idx+1] = S*V
+    
+    return psi
+    
+end
+
+
+# Applies the same SWAP tensor to both sides of an MPO with specified accuracy tolerance:
+function ApplySwapMPO(mpo, swap, idx, tol, maxdim, mindim)
+    
+    orthogonalize!(mpo,idx)
+    
+    # Apply top swap:
+    setprime!(swap, 4, plev=1)
+    setprime!(swap, 1, plev=0)
+    setprime!(swap, 0, plev=4)
+    
+    temp_tensor = (mpo[idx] * mpo[idx+1]) * swap
+    
+    # Apply bottom swap:
+    setprime!(swap, 2, plev=1)
+    setprime!(swap, 3, plev=0)
+    
+    temp_tensor *= swap
+    
+    # De-prime the temp_tensor:
+    setprime!(temp_tensor, 0, plev=1)
+    setprime!(temp_tensor, 2, plev=3)
+    
+    temp_inds = uniqueinds(mpo[idx],mpo[idx+1])
+    
+    U,S,V = svd(temp_tensor,temp_inds,cutoff=tol,maxdim=maxdim,mindim=mindim,alg="qr_iteration")
+    
+    mpo[idx] = U
+    mpo[idx+1] = S*V
+    
+    return mpo
+    
+end
+
+
 # Permutes the MPS according to the swap network indices provided:
-function Permute(psi, sites, ord1, ord2; tol=1E-16, maxdim=5000, spatial=false)
+function Permute(passed_psi, sites, ord1, ord2; tol=1E-16, maxdim=5000, mindim=50, spinpair=false, locdim=2, verbose=false, alg="qr_iteration")
     
-    swap_indices = BubbleSort(ord1, ord2, spatial=spatial)
+    # Copy psi:
+    psi = deepcopy(passed_psi)
     
-    for idx in swap_indices
+    swap_indices = BubbleSort(ord1, ord2, spinpair=spinpair)
+    
+    if verbose==true
+        println("Permuting state: ")
+    end
+    
+    for (i, idx) in enumerate(swap_indices)
         
-        swap_tensor = BuildSwap(sites, idx)
+        swap_tensor = BuildFermionicSwap(siteinds(psi), idx, dim=locdim)
         
-        psi = ApplySwap(psi, swap_tensor, idx, tol, maxdim)
+        psi = ApplySwap(psi, swap_tensor, idx, tol, maxdim, mindim, alg)
+        
+        if verbose==true
+            print("Progress: [",string(i),"/",string(length(swap_indices)),"] \r")
+            flush(stdout)
+        end
         
     end
     
+    if verbose==true
+        println("")
+        println("Done!")
+    end
+    
     return psi
+    
+end
+
+
+# Permutes an MPO according to the swap network indices provided:
+function PermuteMPO(passed_mpo, sites, ord1, ord2; tol=1E-16, maxdim=5000, mindim=50, spinpair=false, locdim=2)
+    
+    # Copy MPO:
+    mpo = deepcopy(passed_mpo)
+    
+    swap_indices = BubbleSort(ord1, ord2, spinpair=spinpair)
+    
+    # Prime the indices:
+    setprime!(mpo, 2, plev=1)
+    
+    for idx in swap_indices
+        
+        swap_tensor = BuildFermionicSwap(sites, idx, dim=locdim)
+        
+        mpo = ApplySwapMPO(mpo, swap_tensor, idx, tol, maxdim, mindim)
+        
+    end
+    
+    setprime!(mpo, 1, plev=2)
+    
+    return mpo
     
 end

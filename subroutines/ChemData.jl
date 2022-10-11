@@ -38,6 +38,11 @@ function ReadIn(fname)
         
         e_rhf = read(grp, "e_rhf")
         e_fci = read(grp, "e_fci")
+        if read(grp, "e_fci")=="N/A"
+            e_fci = 0.0
+        else
+            e_fci = read(grp, "e_fci")
+        end
         h1e = read(grp, "h1e")
         h2e = read(grp, "h2e")
         N_el = read(grp, "nel")
@@ -55,5 +60,29 @@ function ReadIn(fname)
     close(fid)
     
     return cdata_list
+    
+end
+
+
+# Reduce the dimensions to the specified active space:
+function ActiveSpace(chemical_data, active)
+    
+    inert = setdiff(1:size(chemical_data.h1e,1), active)
+    
+    mol_name = chemical_data.mol_name
+    basis = chemical_data.basis
+    geometry = chemical_data.geometry
+    e_rhf = chemical_data.e_rhf
+    e_fci = chemical_data.e_fci
+    e_nuc = chemical_data.e_nuc
+    h1e = chemical_data.h1e[setdiff(1:end, inert),setdiff(1:end, inert)]
+    h2e = chemical_data.h2e[setdiff(1:end, inert),setdiff(1:end, inert),setdiff(1:end, inert),setdiff(1:end, inert)]
+    N_el = sum(active .<= floor(chemical_data.N_el/2)) + sum(active .<= ceil(chemical_data.N_el/2))
+    N_spt = length(active)
+    N = 2*length(active)
+    
+    active_data = ChemProperties(mol_name, basis, geometry, e_rhf, e_fci, e_nuc, h1e, h2e, N_el, N, N_spt)
+    
+    return active_data
     
 end
