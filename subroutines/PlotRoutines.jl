@@ -26,9 +26,13 @@ end
 
 
 # Orbital graph plot:
-function OrbitalGraphPlot(graph_mat; multiplier=2)
+function OrbitalGraphPlot(graph_mat; multiplier=2, mult_mat=nothing)
     
-    graphplot(graph_mat, 
+    if mult_mat!=nothing
+        graph_mat .*= mult_mat
+    end
+    
+    display(graphplot(graph_mat, 
         method=:circular,
         curves=false, 
         names=[lpad(string(i), 2, '0') for i=1:chemical_data.N_spt], 
@@ -40,7 +44,7 @@ function OrbitalGraphPlot(graph_mat; multiplier=2)
         linealpha=0.9,
         nodestrokealpha=0.0,
         edgecolor=:darkcyan
-    )
+    ))
     
 end
 
