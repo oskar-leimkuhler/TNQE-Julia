@@ -7,11 +7,12 @@ using PyCall
 #using SimpleWeightedGraphs
 using Plots
 using GraphRecipes
-using JuMP
-import Ipopt
-import ForwardDiff
+#using JuMP
+#import Ipopt
+#import ForwardDiff
 using BlackBoxOptim
 using Combinatorics
+using LinearAlgebra
 
 # Importing the other submodules:
 include("./ChemData.jl")
@@ -24,8 +25,8 @@ include("./PlotRoutines.jl")
 include("./Disentanglers.jl")
 include("./Misc.jl")
 include("./SubspaceRoutines.jl")
-include("./BBOptimizer.jl")
 include("./SubspaceData.jl")
+include("./Optimizer.jl")
 
 # Custom iTensor functions:
 include("./custom_itensor/projmpo_mps_c.jl")

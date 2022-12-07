@@ -4,6 +4,10 @@
 using ITensors
 
 
+# Globally declaring the identity operator for electron sites:
+ITensors.op(::OpName"I",::SiteType"Electron") = [1 0 0 0; 0 1 0 0; 0 0 1 0; 0 0 0 1]
+
+
 # Generates index positions for a bubble/insertion sorting network to rearrange sites:
 function BubbleSort(ord1, ord2; spinpair=false)
     
@@ -99,27 +103,16 @@ function ApplySwap(psi, swap, idx, tol, maxdim, mindim, alg)
 end
 
 
-# Applies the same SWAP tensor to both sides of an MPO with specified accuracy tolerance:
+# Applies the same SWAP tensor to one side of an MPO with specified accuracy tolerance:
 function ApplySwapMPO(mpo, swap, idx, tol, maxdim, mindim)
     
     orthogonalize!(mpo,idx)
     
-    # Apply top swap:
-    setprime!(swap, 4, plev=1)
-    setprime!(swap, 1, plev=0)
-    setprime!(swap, 0, plev=4)
-    
-    temp_tensor = (mpo[idx] * mpo[idx+1]) * swap
-    
-    # Apply bottom swap:
-    setprime!(swap, 2, plev=1)
-    setprime!(swap, 3, plev=0)
-    
-    temp_tensor *= swap
+    # Apply swap to the unprimed indices:
+    temp_tensor = (mpo[idx] * mpo[idx+1]) * dag(swap)
     
     # De-prime the temp_tensor:
     setprime!(temp_tensor, 0, plev=1)
-    setprime!(temp_tensor, 2, plev=3)
     
     temp_inds = uniqueinds(mpo[idx],mpo[idx+1])
     
@@ -134,7 +127,7 @@ end
 
 
 # Permutes the MPS according to the swap network indices provided:
-function Permute(passed_psi, sites, ord1, ord2; tol=1E-16, maxdim=5000, mindim=50, spinpair=false, locdim=2, verbose=false, alg="qr_iteration")
+function Permute(passed_psi, sites, ord1, ord2; tol=1E-16, maxdim=5000, mindim=1, spinpair=false, locdim=4, verbose=false, alg="divide_and_conquer")
     
     # Copy psi:
     psi = deepcopy(passed_psi)
@@ -169,15 +162,15 @@ end
 
 
 # Permutes an MPO according to the swap network indices provided:
-function PermuteMPO(passed_mpo, sites, ord1, ord2; tol=1E-16, maxdim=5000, mindim=50, spinpair=false, locdim=2)
+function PermuteMPO(passed_mpo, sites, ord1, ord2; tol=1e-16, maxdim=5000, mindim=0, spinpair=false, locdim=4)
     
     # Copy MPO:
     mpo = deepcopy(passed_mpo)
     
-    swap_indices = BubbleSort(ord1, ord2, spinpair=spinpair)
-    
-    # Prime the indices:
+    # Prime one side of the MPO:
     setprime!(mpo, 2, plev=1)
+    
+    swap_indices = BubbleSort(ord1, ord2, spinpair=spinpair)
     
     for idx in swap_indices
         

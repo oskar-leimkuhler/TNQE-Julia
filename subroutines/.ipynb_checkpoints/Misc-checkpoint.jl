@@ -45,3 +45,42 @@ function DisplayEvalData(chemical_data, H_mat, E, C, kappa)
     scatter(collect(1:length(C[:,1])), real.(C[:,1]),lw=2)
     hline!([0.0], lw=2)
 end
+
+###############################################################################
+
+# Simulated annealing and stochastic tunnelling probability functions:
+
+function ExpProb(E_0, E_1, beta)
+    if E_1<=E_0
+        P = 1
+    else
+        P = exp((E_0-E_1)*beta)
+    end
+    return P
+end
+
+
+function StepProb(E_0, E_1)
+    if E_1<=E_0
+        P = 1
+    else
+        P = 0
+    end
+    return P
+end
+
+# Returns a polynomial acceptance probability:
+function PolyProb(e, e_new, temp; tpow=3, greedy=false)
+    if e_new < e
+        P=1.0
+    elseif greedy==false
+        P=temp^tpow
+    else
+        P=0.0
+    end
+    return P
+end
+
+function Fstun(E_0, E_1, gamma)
+    return 1.0 - exp(gamma*(E_1-E_0))
+end

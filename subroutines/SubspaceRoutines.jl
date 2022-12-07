@@ -234,6 +234,9 @@ function GenSubspaceMats(
             S_mat[i,j] = inner(perm_psi_i, psi_list[j])
             S_mat[j,i] = S_mat[i,j]
             
+            #println(siteinds(ham_list[j]))
+            #println(siteinds(psi_list[j]))
+            
             H_mat[i,j] = inner(perm_psi_i', ham_list[j], psi_list[j])
             H_mat[j,i] = H_mat[i,j]
 
@@ -318,7 +321,7 @@ function ShrinkSubspaceMats(H_in,S_in,jpop)
 end
 
 
-function ScreenOrderings(chemical_data, sites, sweeps, M; maxiter=10, M_new=1, verbose=false)
+function ScreenOrderings(chemical_data, sites, sweeps, M; maxiter=10, M_new=1, annealing=false, alpha=1.0, verbose=false)
     
     # Generate an initial set of orderings:
     ord_list = [randperm(chemical_data.N_spt) for i=1:M]
@@ -353,6 +356,12 @@ function ScreenOrderings(chemical_data, sites, sweeps, M; maxiter=10, M_new=1, v
         singleham=false,
         verbose=true
     );
+    
+    # Solve the GenEig problem:
+    E, C, kappa = SolveGenEig(H_mat, S_mat, thresh="inversion", eps=1e-8)
+    e_old = E[1]
+    kappa_old = kappa
+    
     
     if verbose
         println("Screening states (batch size = $(M_new))")
@@ -412,36 +421,49 @@ function ScreenOrderings(chemical_data, sites, sweeps, M; maxiter=10, M_new=1, v
             
             # Solve the GenEig problem:
             E, C, kappa = SolveGenEig(H_red, S_red, thresh="inversion", eps=1e-8)
-            e_gnd = minimum(filter(!isnan,real.(E)))+chemical_data.e_nuc
+            e_gnd = minimum(filter(!isnan,real.(E)))
             push!(e_gnd_list, e_gnd)
             
         end
         
-        # Find the minimum index and remove that state:
-        min_ids = ids_list[findmin(e_gnd_list)[2]]
-        red_ids = setdiff(collect(1:length(ext_ord_list)),min_ids)
+        # Find the minimum index:
+        min_e_gnd, min_idx = findmin(e_gnd_list[1:end-1])
         
-        psi_list = ext_psi_list[red_ids]
-        ham_list = ext_ham_list[red_ids]
-        ord_list = ext_ord_list[red_ids]
-        
-        H_red, S_red = deepcopy(H_exp), deepcopy(S_exp)
-        
-        for k=1:length(min_ids)
-            kmod = sum([Int(min_ids[k]>min_ids[m]) for m=1:k-1])
-            jpop = min_ids[k]-kmod
-            H_red, S_red = ShrinkSubspaceMats(H_red,S_red,jpop)
+        # Accept with some probability:
+        if annealing
+            beta = l*alpha
+            P = ExpProb(e_old, min_e_gnd, beta)
+            accept = (rand(Float64)<P)
+        else
+            P = StepProb(e_old, min_e_gnd)
+            accept = Bool(P)
         end
         
-        H_mat, S_mat = H_red, S_red
+        min_ids = ids_list[min_idx]
+        red_ids = setdiff(collect(1:length(ext_ord_list)),min_ids)
         
-        #println(size(H_mat))
-        #println(size(S_mat))
+        if accept
+            # Modify the states and subspace matrices:
+            psi_list = ext_psi_list[red_ids]
+            ham_list = ext_ham_list[red_ids]
+            ord_list = ext_ord_list[red_ids]
+
+            H_red, S_red = deepcopy(H_exp), deepcopy(S_exp)
+
+            for k=1:length(min_ids)
+                kmod = sum([Int(min_ids[k]>min_ids[m]) for m=1:k-1])
+                jpop = min_ids[k]-kmod
+                H_red, S_red = ShrinkSubspaceMats(H_red,S_red,jpop)
+            end
+            
+            H_mat, S_mat = H_red, S_red
+        end
         
         if verbose
             # Solve the GenEig problem:
-            E_old = E[1]
             E, C, kappa = SolveGenEig(H_mat, S_mat, thresh="inversion", eps=1e-8)
+            e_old = E[1]
+            kappa_old = kappa
             min_eval = minimum(filter(!isnan,real.(E)))
             print("Progress: [$(l)/$(maxiter)]; min. eval = $(min_eval) \r")
             flush(stdout)

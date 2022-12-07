@@ -3,11 +3,13 @@
 # Packages:
 using ITensors
 using HDF5
+import Base: copy
 
 
 struct MetaParameters
     # Subspace dimension:
     M::Int
+    M_ex::Int
     # MPS/MPO constructor parameters:
     psi_maxdim::Int
     psi_tol::Float64
@@ -37,6 +39,8 @@ mutable struct SubspaceProperties
     ord_list::Vector{Vector{Int}}
     psi_list::Vector{MPS}
     ham_list::Vector{MPO}
+    perm_ops::Vector{Vector{MPO}}
+    #perm_hams::Vector{Vector{MPO}}
     H_mat::Matrix{Float64}
     S_mat::Matrix{Float64}
     E::Vector{Float64}
@@ -74,6 +78,7 @@ function GenSubspace(
     mparams = MetaParameters(
         # Subspace dimension:
         M,
+        1,
         # MPS/MPO constructor parameters:
         psi_maxdim,
         psi_tol,
@@ -103,6 +108,7 @@ function GenSubspace(
     if dflt_sweeps == nothing
         dflt_sweeps = Sweeps(sweep_num)
         maxdim!(dflt_sweeps,psi_maxdim)
+        mindim!(dflt_sweeps,psi_maxdim)
         cutoff!(dflt_sweeps,psi_tol)
         setnoise!(dflt_sweeps, sweep_noise...)
     end
@@ -116,6 +122,8 @@ function GenSubspace(
         [],
         [],
         [],
+        [],
+        #[],
         zeros((mparams.M,mparams.M)),
         zeros((mparams.M,mparams.M)),
         zeros(mparams.M),
@@ -138,6 +146,8 @@ function copy(sdata::SubspaceProperties)
         deepcopy(sdata.ord_list),
         deepcopy(sdata.psi_list),
         deepcopy(sdata.ham_list),
+        deepcopy(sdata.perm_ops),
+        #deepcopy(sdata.perm_hams),
         deepcopy(sdata.H_mat),
         deepcopy(sdata.S_mat),
         deepcopy(sdata.E),
@@ -182,39 +192,110 @@ function GenStates!(
 end
 
 
+function GenPermOps!(
+        sdata::SubspaceProperties;
+        verbose=false
+    )
+    
+    M = sdata.mparams.M
+    
+    # Construct identity MPOs:
+    sdata.perm_ops = [[MPO(sdata.sites, "I") for j=1:M-i] for i=1:M]
+    
+    #sdata.perm_hams = [[sdata.ham_list[i] for j=1:M-i] for i=1:M]
+    
+    if verbose
+        println("Generating permutation operators:")
+    end
+    
+    c = 0
+    c_tot = Int((M^2-M)/2)
+    
+    # Permute the identity MPOs to obtain \\
+    # ...permutation MPOs:
+    for i=1:M, j=1:M-i
+        
+        sdata.perm_ops[i][j] = PermuteMPO(
+            sdata.perm_ops[i][j],
+            sdata.sites,
+            sdata.ord_list[i],
+            sdata.ord_list[j+i]
+        )
+        
+        """
+        sdata.perm_hams[i][j] = PermuteMPO(
+            sdata.perm_hams[i][j],
+            sdata.sites,
+            sdata.ord_list[i],
+            sdata.ord_list[j+i]
+        )
+        """
+        #sdata.perm_hams[i][j] = apply(sdata.perm_hams[i][j], sdata.perm_ops[i][j], cutoff=1e-12)
+        
+        c += 1
+        
+        if verbose
+            print("Progress: [$(c)/$(c_tot)] \r")
+            flush(stdout)
+        end
+        
+    end
+    
+    if verbose
+        println("\nDone!\n")
+    end
+    
+end
+
+
 function GenSubspaceMats!(
         sdata::SubspaceProperties;
         verbose=false
     )
     
-    # Generate a set of states:
-    sdata.H_mat, sdata.S_mat = GenSubspaceMats(
-        sdata.chem_data,
-        sdata.sites,
-        sdata.ord_list,
-        sdata.psi_list,
-        sdata.ham_list,
-        perm_tol=sdata.mparams.perm_tol, 
-        perm_maxdim=sdata.mparams.perm_maxdim,
-        spinpair=sdata.mparams.spinpair, 
-        spatial=sdata.mparams.spatial, 
-        singleham=sdata.mparams.singleham,
-        verbose=verbose
-    )
+    M = sdata.mparams.M
+    
+    # Diagonal elements:
+    for i=1:M
+        sdata.H_mat[i,i] = inner(sdata.psi_list[i]', sdata.ham_list[i], sdata.psi_list[i])
+        sdata.S_mat[i,i] = 1.0
+    end
+    
+    # Off-diagonal elements:
+    for i=1:M, j=i+1:M
+        
+        sdata.H_mat[i,j] = inner(sdata.perm_ops[i][j-i], sdata.psi_list[j], sdata.ham_list[i], sdata.psi_list[i])
+        #sdata.H_mat[i,j] = inner(sdata.psi_list[i]', sdata.perm_hams[i][j-i], sdata.psi_list[j])
+        sdata.H_mat[j,i] = sdata.H_mat[i,j]
+        
+        sdata.S_mat[i,j] = inner(sdata.psi_list[i]', sdata.perm_ops[i][j-i], sdata.psi_list[j])
+        sdata.S_mat[j,i] = sdata.S_mat[i,j]
+        
+    end
     
 end
 
 
 function SolveGenEig!(
         sdata::SubspaceProperties;
+        thresh=nothing,
+        eps=nothing,
         verbose=false
     )
+    
+    if thresh==nothing
+        thresh=sdata.mparams.thresh
+    end
+    
+    if eps==nothing
+        eps=sdata.mparams.eps
+    end
     
     sdata.E, sdata.C, sdata.kappa = SolveGenEig(
         sdata.H_mat,
         sdata.S_mat,
-        thresh=sdata.mparams.thresh,
-        eps=sdata.mparams.eps
+        thresh=thresh,
+        eps=eps
     )
     
     if verbose
@@ -222,49 +303,104 @@ function SolveGenEig!(
     end
     
 end
+    
+    
+# The subspace "shadow" data structure:
+# Preserves all matrix elements between subspace basis states
+# without keeping MPS's etc.
+mutable struct SubspaceShadow
+    chem_data::ChemProperties
+    M_list::Vector{Int}
+    thresh::String
+    eps::Float64
+    vec_list::Vector{Vector{Float64}}
+    X_list::Vector{Matrix{Float64}}
+    H_full::Matrix{Float64}
+    S_full::Matrix{Float64}
+    H_mat::Matrix{Float64}
+    S_mat::Matrix{Float64}
+    E::Vector{Float64}
+    C::Matrix{Float64}
+    kappa::Float64
+end
 
 
-function ScreenOrderings!(
-        sdata::SubspaceProperties;
-        maxiter=20,
-        M_new=1,
-        verbose=false
+function copy(sh::SubspaceShadow)
+    
+    sh2 = SubspaceShadow(
+        sh.chem_data,
+        sh.M_list,
+        sh.thresh,
+        sh.eps,
+        deepcopy(sh.vec_list),
+        deepcopy(sh.X_list),
+        deepcopy(sh.H_full),
+        deepcopy(sh.S_full),
+        deepcopy(sh.H_mat),
+        deepcopy(sh.S_mat),
+        deepcopy(sh.E),
+        deepcopy(sh.C),
+        sh.kappa
     )
     
-    sdata.psi_list, sdata.ham_list, sdata.ord_list = ScreenOrderings(
-        sdata.chem_data, 
-        sdata.sites, 
-        sdata.dflt_sweeps, 
-        sdata.mparams.M; 
-        maxiter=maxiter, 
-        M_new=M_new, 
-        verbose=verbose
-    )
+    return sh2
     
 end
 
 
-function BBOptimizeStates!(
-        sdata::SubspaceProperties;
-        loops=1,
-        sweeps=1,
+function GenSubspaceMats!(shadow::SubspaceShadow)
+    
+    M_gm = length(shadow.M_list)
+    
+    for i=1:M_gm, j=i:M_gm
+        
+        i0 = sum(shadow.M_list[1:i-1])+1
+        i1 = sum(shadow.M_list[1:i])
+        
+        j0 = sum(shadow.M_list[1:j-1])+1
+        j1 = sum(shadow.M_list[1:j])
+        
+        # For readability:
+        vec_list = shadow.vec_list
+        X_list = shadow.X_list
+        H_full = shadow.H_full
+        S_full = shadow.S_full
+        
+        shadow.H_mat[i,j] = transpose(vec_list[i]) * H_full[i0:i1,j0:j1] * vec_list[j]
+        shadow.H_mat[j,i] = shadow.H_mat[i,j]
+        
+        shadow.S_mat[i,j] = transpose(vec_list[i]) * S_full[i0:i1,j0:j1] * vec_list[j]
+        shadow.S_mat[j,i] = shadow.S_mat[i,j]
+        
+    end
+    
+end
+
+
+function SolveGenEig!(
+        shadow::SubspaceShadow;
+        thresh=nothing,
+        eps=nothing,
         verbose=false
     )
     
-    sdata.psi_list = BBOptimizeStates(
-        sdata.chem_data,
-        sdata.psi_list,
-        sdata.ham_list,
-        sdata.ord_list;
-        tol=sdata.mparams.psi_tol,
-        maxdim=sdata.mparams.psi_maxdim,
-        perm_tol=sdata.mparams.perm_tol,
-        perm_maxdim=sdata.mparams.perm_maxdim,
-        loops=loops,
-        sweeps=sweeps,
-        thresh=sdata.mparams.thresh,
-        eps=sdata.mparams.eps,
-        verbose=verbose
+    if thresh==nothing
+        thresh=shadow.thresh
+    end
+    
+    if eps==nothing
+        eps=shadow.eps
+    end
+    
+    shadow.E, shadow.C, shadow.kappa = SolveGenEig(
+        shadow.H_mat,
+        shadow.S_mat,
+        thresh=thresh,
+        eps=eps
     )
+    
+    if verbose
+        DisplayEvalData(shadow.chem_data, shadow.H_mat, shadow.E, shadow.C, shadow.kappa)
+    end
     
 end
