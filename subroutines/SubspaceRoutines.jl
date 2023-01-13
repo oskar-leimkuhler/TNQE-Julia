@@ -30,7 +30,8 @@ function RunDMRG(
         hf_occ = [FillHF(spnord[i], chemical_data.N_el) for i=1:chemical_data.N]
     end
 
-    psi0 = randomMPS(sites, hf_occ, linkdims=linkdims)
+    #psi0 = randomMPS(sites, hf_occ, linkdims=linkdims)
+    psi0 = MPS(sites, hf_occ)
     
     if ovlp_opt==true && size(prev_states,1)>0
         e_dmrg, psi = dmrg(H, prev_states, psi0, sweeps, outputlevel=0, weight=weight)

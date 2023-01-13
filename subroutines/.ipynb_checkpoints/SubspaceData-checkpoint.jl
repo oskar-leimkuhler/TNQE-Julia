@@ -163,18 +163,23 @@ end
 function GenStates!(
         sdata::SubspaceProperties;
         ovlp_opt=false,
+        sweeps=nothing,
         weight=1.0,
         prior_states=[],
         prior_ords=[],
         verbose=false
     )
     
+    if sweeps==nothing
+        sweeps = sdata.dflt_sweeps
+    end
+    
     # Generate a set of states:
     sdata.psi_list, sdata.ham_list = GenStates(
         sdata.chem_data, 
         sdata.sites, 
         sdata.ord_list, 
-        sdata.dflt_sweeps, 
+        sweeps, 
         ovlp_opt=ovlp_opt,
         weight=weight,
         prior_states=prior_states,
@@ -188,6 +193,50 @@ function GenStates!(
         singleham=sdata.mparams.singleham,
         verbose=verbose
     )
+    
+end
+
+
+function GenExcited!(
+        sdata::SubspaceProperties;
+        sweeps=nothing,
+        weight=1.0,
+        lev=1,
+        verbose=false
+    )
+    
+    psi_list = []
+    ham_list = []
+    
+    for j=1:sdata.mparams.M
+        
+        ords = [sdata.ord_list[j] for k=1:minimum([j,sdata.mparams.M])]
+        
+        # Generate a set of states:
+        psis, hams = GenStates(
+            sdata.chem_data, 
+            sdata.sites, 
+            ords, 
+            sweeps, 
+            ovlp_opt=true,
+            weight=weight,
+            perm_tol=sdata.mparams.perm_tol, 
+            perm_maxdim=sdata.mparams.perm_maxdim, 
+            ham_tol=sdata.mparams.ham_tol, 
+            ham_maxdim=sdata.mparams.ham_maxdim, 
+            spinpair=sdata.mparams.spinpair, 
+            spatial=sdata.mparams.spatial, 
+            singleham=sdata.mparams.singleham,
+            verbose=verbose
+        )
+        
+        push!(psi_list, psis[end])
+        push!(ham_list, hams[1])
+        
+    end
+    
+    sdata.psi_list = psi_list
+    sdata.ham_list = ham_list
     
 end
 

@@ -30,7 +30,8 @@ function RunDMRG(
         hf_occ = [FillHF(spnord[i], chemical_data.N_el) for i=1:chemical_data.N]
     end
 
-    psi0 = randomMPS(sites, hf_occ, linkdims=linkdims)
+    #psi0 = randomMPS(sites, hf_occ, linkdims=linkdims)
+    psi0 = MPS(sites, hf_occ)
     
     if ovlp_opt==true && size(prev_states,1)>0
         e_dmrg, psi = dmrg(H, prev_states, psi0, sweeps, outputlevel=0, weight=weight)
@@ -318,30 +319,6 @@ function ShrinkSubspaceMats(H_in,S_in,jpop)
     
     return H_mat, S_mat
     
-end
-
-
-function ExpProb(E_0, E_1, beta)
-    if E_1<=E_0
-        P = 1
-    else
-        P = exp((E_0-E_1)*beta)
-    end
-    return P
-end
-
-
-function StepProb(E_0, E_1)
-    if E_1<=E_0
-        P = 1
-    else
-        P = 0
-    end
-    return P
-end
-
-function Fstun(E_0, E_1, gamma)
-    return 1.0 - exp(gamma*(E_1-E_0))
 end
 
 

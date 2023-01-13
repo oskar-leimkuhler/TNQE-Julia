@@ -11,6 +11,7 @@ ITensors.op(::OpName"I",::SiteType"Electron") = [1 0 0 0; 0 1 0 0; 0 0 1 0; 0 0 
 # Generates index positions for a bubble/insertion sorting network to rearrange sites:
 function BubbleSort(ord1, ord2; spinpair=false)
     
+    """
     if spinpair==true
         ord1c = deepcopy(Spatial2SpinOrd(ord1))
         ord2c = deepcopy(Spatial2SpinOrd(ord2))
@@ -18,13 +19,22 @@ function BubbleSort(ord1, ord2; spinpair=false)
         ord1c = deepcopy(ord1)
         ord2c = deepcopy(ord2)
     end
+    """
     
-    N = size(ord2c,1)
+    N = size(ord1,1)
     
-    target_indices = [findall(x->x==i, ord2c)[1] for i=1:N]
+    aux = [0 for i=1:N]
+    for i=1:N
+        aux[ord2[i]] = i
+    end
+    
+    targ = [aux[ord1[i]] for i=1:N]
+    
     swap_indices = []
-    
     p_list = vcat(collect(1:N-1), collect(N-2:(-1):1))
+    
+    """
+    target_indices = [findall(x->x==i, ord2c)[1] for i=1:N]
     
     for p in p_list
         for q=p:(-2):1
@@ -32,6 +42,16 @@ function BubbleSort(ord1, ord2; spinpair=false)
                 ord1cc = [ord1c[q], ord1c[q+1]]
                 ord1c[q] = ord1cc[2]
                 ord1c[q+1] = ord1cc[1]
+                push!(swap_indices, q)
+            end
+        end
+    end
+    """
+    
+    for p in p_list
+        for q=p:(-2):1
+            if targ[q+1] < targ[q]
+                targ[q:q+1] = [targ[q+1],targ[q]]
                 push!(swap_indices, q)
             end
         end
