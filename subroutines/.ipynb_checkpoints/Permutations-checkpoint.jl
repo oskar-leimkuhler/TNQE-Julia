@@ -6,6 +6,9 @@ using ITensors
 
 # Globally declaring the identity operator for electron sites:
 ITensors.op(::OpName"I",::SiteType"Electron") = [1 0 0 0; 0 1 0 0; 0 0 1 0; 0 0 0 1]
+ITensors.op(::OpName"SWAP",::SiteType"Electron") = [1 0 0 0; 0 0 1 0; 0 1 0 0; 0 0 0 1]
+ITensors.op(::OpName"FSWAP",::SiteType"Electron") = [1 0 0 0; 0 0 1 0; 0 1 0 0; 0 0 0 -1]
+ITensors.op(::OpName"CZ",::SiteType"Electron") = [1 0 0 0; 0 1 0 0; 0 0 1 0; 0 0 0 -1]
 
 
 # Generates index positions for a bubble/insertion sorting network to rearrange sites:
@@ -62,14 +65,23 @@ function BubbleSort(ord1, ord2; spinpair=false)
 end
 
 
-# Builds the SWAP ITensor object between sites idx and idx+1:
+# Builds theSWAP ITensor object between sites idx and idx+1:
 function BuildSwap(sites, idx; dim=2)
     
-    swap_array = zeros((dim,dim,dim,dim))
+    swap = [1 0 0 0;
+            0 0 1 0;
+            0 1 0 0;
+            0 0 0 1]
     
-    for i=1:dim, j=1:dim, ip=1:dim, jp=1:dim
-        swap_array[i,j,ip,jp] = Int(ip==j && jp==i)
+    i2 = Matrix(I(2))
+    
+    if dim==2
+        swap_mat = swap
+    elseif dim==4
+        swap_mat = kron(i2,kron(swap,i2))*kron(swap,swap)*kron(i2,kron(swap,i2)) 
     end
+    
+    swap_array = reshape(swap_mat, (dim,dim,dim,dim))
 
     swap = ITensor(swap_array, dag(sites[idx]),dag(sites[idx+1]),sites[idx]',sites[idx+1]')
     
@@ -182,7 +194,7 @@ end
 
 
 # Permutes an MPO according to the swap network indices provided:
-function PermuteMPO(passed_mpo, sites, ord1, ord2; tol=1e-16, maxdim=5000, mindim=0, spinpair=false, locdim=4)
+function PermuteMPO(passed_mpo, sites, ord1, ord2; do_fswap=true, tol=1e-16, maxdim=5000, mindim=0, spinpair=false, locdim=4)
     
     # Copy MPO:
     mpo = deepcopy(passed_mpo)
@@ -194,7 +206,11 @@ function PermuteMPO(passed_mpo, sites, ord1, ord2; tol=1e-16, maxdim=5000, mindi
     
     for idx in swap_indices
         
-        swap_tensor = BuildFermionicSwap(sites, idx, dim=locdim)
+        if do_fswap
+            swap_tensor = BuildFermionicSwap(sites, idx, dim=locdim)
+        else
+            swap_tensor = BuildSwap(sites, idx, dim=locdim)
+        end
         
         mpo = ApplySwapMPO(mpo, swap_tensor, idx, tol, maxdim, mindim)
         

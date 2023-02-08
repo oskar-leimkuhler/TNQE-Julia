@@ -37,9 +37,11 @@ mutable struct SubspaceProperties
     sites::Vector
     dflt_sweeps::Sweeps
     ord_list::Vector{Vector{Int}}
+    rev_list::Vector{Bool}
     psi_list::Vector{MPS}
     ham_list::Vector{MPO}
     perm_ops::Vector{Vector{MPO}}
+    perm_alt::Vector{Vector{Vector{MPO}}}
     #perm_hams::Vector{Vector{MPO}}
     H_mat::Matrix{Float64}
     S_mat::Matrix{Float64}
@@ -120,6 +122,8 @@ function GenSubspace(
         sites,
         dflt_sweeps,
         [],
+        [false for j=1:mparams.M],
+        [],
         [],
         [],
         [],
@@ -144,9 +148,11 @@ function copy(sdata::SubspaceProperties)
         sdata.sites,
         sdata.dflt_sweeps,
         deepcopy(sdata.ord_list),
+        deepcopy(sdata.rev_list),
         deepcopy(sdata.psi_list),
         deepcopy(sdata.ham_list),
         deepcopy(sdata.perm_ops),
+        deepcopy(sdata.perm_alt),
         #deepcopy(sdata.perm_hams),
         deepcopy(sdata.H_mat),
         deepcopy(sdata.S_mat),
@@ -201,16 +207,20 @@ function GenExcited!(
         sdata::SubspaceProperties;
         sweeps=nothing,
         weight=1.0,
-        lev=1,
+        levs=nothing,
         verbose=false
     )
+    
+    if levs==nothing
+        levs = collect(1:sdata.mparams.M)
+    end
     
     psi_list = []
     ham_list = []
     
     for j=1:sdata.mparams.M
         
-        ords = [sdata.ord_list[j] for k=1:minimum([j,sdata.mparams.M])]
+        ords = [sdata.ord_list[j] for k=1:levs[j]]
         
         # Generate a set of states:
         psis, hams = GenStates(
@@ -241,15 +251,110 @@ function GenExcited!(
 end
 
 
-function GenPermOps!(
+function SchmidtRankTruncate!(
         sdata::SubspaceProperties;
         verbose=false
     )
     
     M = sdata.mparams.M
     
+    m_eff = 4*sdata.mparams.psi_maxdim
+    
+    # For each state, maximally entangle at each bond:
+    for j=1:M
+        
+        psi = sdata.psi_list[j]
+        
+        for s=1:2
+            
+            orthogonalize!(psi,1)
+        
+            for p=1:sdata.chem_data.N_spt-1
+
+                temp_tensor = (psi[p] * psi[p+1])
+                temp_inds = uniqueinds(psi[p], psi[p+1])
+
+                U,S,V = svd(temp_tensor, temp_inds, min_blockdim=m_eff, alg="recursive")
+
+                m_j = length(diag(Array(S.tensor)))
+
+                ids = inds(S)
+
+                sig = minimum([m_j, j])
+
+                for k=1:m_j
+
+                    """
+                    if k==1
+                        S[ids[1]=>k,ids[2]=>k] = 1.0
+                    else
+                        S[ids[1]=>k,ids[2]=>k] = 1.0
+                    end
+                    """
+
+                    S[ids[1]=>k,ids[2]=>k] = 1.0/sqrt(m_j)
+
+                end
+
+                temp_block = U*S*V
+
+                # Replace the tensors of the MPS:
+                spec = ITensors.replacebond!(
+                    psi,
+                    p,
+                    temp_block;
+                    #maxdim=sdata.mparams.psi_maxdim,
+                    min_blockdim=sdata.mparams.psi_maxdim,
+                    ortho="left",
+                    normalize=true,
+                    svd_alg="qr_iteration"
+                )
+
+            end
+
+            truncate!(sdata.psi_list[j], maxdim=sdata.mparams.psi_maxdim)
+            
+        end
+        
+    end
+    
+end
+
+
+function ApplyPhases!(mpo)
+    
+    #Apply phases:
+    phase_mat = [1 0 0 0; 
+                 0 1 0 0;
+                 0 0 1 0;
+                 0 0 0 -1]
+            
+    for p=1:length(mpo)
+
+        mpo_inds = siteinds(mpo)[p]
+        
+        phase_gate = ITensor(phase_mat, dag(mpo_inds[1]), dag(mpo_inds[2]))
+        setprime!(phase_gate, 2, plev=0)
+        
+        mpo[p] = mpo[p] * phase_gate
+        setprime!(mpo[p], 1, plev=2)
+        
+    end
+    
+end
+
+
+function GenPermOps!(
+        sdata::SubspaceProperties;
+        compute_alternates=true,
+        verbose=false
+    )
+    
+    M = sdata.mparams.M
+    
     # Construct identity MPOs:
-    sdata.perm_ops = [[MPO(sdata.sites, "I") for j=1:M-i] for i=1:M]
+    #sdata.perm_ops = [[MPO(sdata.sites, "I") for j=1:M-i] for i=1:M]
+    sdata.perm_alt = [[[MPO(sdata.sites, "I") for j=1:M-i] for i=1:M] for pa=1:4]
     
     #sdata.perm_hams = [[sdata.ham_list[i] for j=1:M-i] for i=1:M]
     
@@ -264,21 +369,46 @@ function GenPermOps!(
     # ...permutation MPOs:
     for i=1:M, j=1:M-i
         
-        sdata.perm_ops[i][j] = PermuteMPO(
-            sdata.perm_ops[i][j],
+        sdata.perm_alt[1][i][j] = PermuteMPO(
+            sdata.perm_alt[1][i][j],
             sdata.sites,
             sdata.ord_list[i],
-            sdata.ord_list[j+i]
+            sdata.ord_list[j+i],
+            tol=1e-16
         )
         
-        """
-        sdata.perm_hams[i][j] = PermuteMPO(
-            sdata.perm_hams[i][j],
-            sdata.sites,
-            sdata.ord_list[i],
-            sdata.ord_list[j+i]
-        )
-        """
+        # Alternate (flipped) configurations:
+        if compute_alternates
+            
+            sdata.perm_alt[2][i][j] = PermuteMPO(
+                sdata.perm_alt[2][i][j],
+                sdata.sites,
+                sdata.ord_list[i],
+                reverse(sdata.ord_list[j+i]),
+                tol=1e-16
+            )
+
+            sdata.perm_alt[3][i][j] = ReverseMPO(sdata.perm_alt[2][i][j])
+
+            sdata.perm_alt[4][i][j] = ReverseMPO(sdata.perm_alt[1][i][j])
+            
+            # Apply phases:
+            #phase_mpo = MPO(sdata.sites, "CZ")
+
+            ApplyPhases!(sdata.perm_alt[3][i][j]) #sdata.perm_alt[3][i][j] = apply(sdata.perm_alt[3][i][j], phase_mpo)
+            ApplyPhases!(sdata.perm_alt[4][i][j]) #sdata.perm_alt[4][i][j] = apply(sdata.perm_alt[4][i][j], phase_mpo)
+
+            dag!(swapprime!(sdata.perm_alt[2][i][j],0,1))
+            dag!(swapprime!(sdata.perm_alt[4][i][j],0,1))
+
+            ApplyPhases!(sdata.perm_alt[2][i][j]) #sdata.perm_alt[2][i][j] = apply(sdata.perm_alt[2][i][j], phase_mpo)
+            ApplyPhases!(sdata.perm_alt[4][i][j]) #sdata.perm_alt[4][i][j] = apply(sdata.perm_alt[4][i][j], phase_mpo)
+
+            dag!(swapprime!(sdata.perm_alt[2][i][j],0,1))
+            dag!(swapprime!(sdata.perm_alt[4][i][j],0,1))
+        
+        end
+        
         #sdata.perm_hams[i][j] = apply(sdata.perm_hams[i][j], sdata.perm_ops[i][j], cutoff=1e-12)
         
         c += 1
@@ -290,9 +420,199 @@ function GenPermOps!(
         
     end
     
+    # Set everything to non-flipped config:
+    sdata.perm_ops = [[deepcopy(sdata.perm_alt[1][i][j]) for j=1:M-i] for i=1:M]
+    
     if verbose
         println("\nDone!\n")
     end
+    
+end
+
+
+function GenHams!(sdata)
+    
+    # Update the Hamiltonian MPOs:
+    for j=1:sdata.mparams.M
+        opsum = GenOpSum(sdata.chem_data, sdata.ord_list[j])
+        sdata.ham_list[j] = MPO(opsum, sdata.sites, cutoff=sdata.mparams.ham_tol, maxdim=sdata.mparams.ham_maxdim);
+        if sdata.rev_list[j]
+            sdata.ham_list[j] = ReverseMPO(sdata.ham_list[j])
+        end
+    end
+    
+end
+
+
+# Apply FSWAP tensors to modify the permutation operators for state k:
+# [May change later to include alternates]
+function UpdatePermOps!(
+        sdata::SubspaceProperties,
+        new_ord_list
+    )
+    
+    M = sdata.mparams.M
+    
+    # Update the permutation operators:
+    for i=1:M, j=1:M-i
+        
+        # Un-apply the phases:
+        ApplyPhases!(sdata.perm_alt[3][i][j])
+        ApplyPhases!(sdata.perm_alt[4][i][j])
+
+        dag!(swapprime!(sdata.perm_alt[2][i][j],0,1))
+        dag!(swapprime!(sdata.perm_alt[4][i][j],0,1))
+
+        ApplyPhases!(sdata.perm_alt[2][i][j])
+        ApplyPhases!(sdata.perm_alt[4][i][j])
+
+        dag!(swapprime!(sdata.perm_alt[2][i][j],0,1))
+        dag!(swapprime!(sdata.perm_alt[4][i][j],0,1))
+        
+        for f=1:4
+        
+            ords_i = [deepcopy(sdata.ord_list[i]), deepcopy(new_ord_list[i])]
+            ords_j = [deepcopy(sdata.ord_list[j+i]), deepcopy(new_ord_list[j+i])]
+
+            if f==2 || f==4
+                ords_j = [reverse(ords_j[k]) for k=1:2]
+            end
+            
+            if f==3 || f==4
+                ords_i = [reverse(ords_i[k]) for k=1:2]
+            end
+            
+            sdata.perm_alt[f][i][j] = PermuteMPO(
+                sdata.perm_alt[f][i][j],
+                sdata.sites,
+                ords_j[1],
+                ords_j[2],
+                tol=1e-16
+            )
+            
+            dag!(swapprime!(sdata.perm_alt[f][i][j], 0,1))
+            
+            sdata.perm_alt[f][i][j] = PermuteMPO(
+                sdata.perm_alt[f][i][j],
+                sdata.sites,
+                ords_i[1],
+                ords_i[2],
+                tol=1e-16
+            )
+
+            dag!(swapprime!(sdata.perm_alt[f][i][j], 0,1))
+            
+        end
+        
+        # Re-apply the phases:
+        ApplyPhases!(sdata.perm_alt[3][i][j])
+        ApplyPhases!(sdata.perm_alt[4][i][j])
+
+        dag!(swapprime!(sdata.perm_alt[2][i][j],0,1))
+        dag!(swapprime!(sdata.perm_alt[4][i][j],0,1))
+
+        ApplyPhases!(sdata.perm_alt[2][i][j])
+        ApplyPhases!(sdata.perm_alt[4][i][j])
+
+        dag!(swapprime!(sdata.perm_alt[2][i][j],0,1))
+        dag!(swapprime!(sdata.perm_alt[4][i][j],0,1))
+        
+        
+    end
+    
+    SelectPermOps!(sdata)
+    
+end
+
+
+function SelectPermOps!(
+        sdata::SubspaceProperties
+    )
+    
+    M = sdata.mparams.M
+    
+    phase_mpo = MPO(sdata.sites, "CZ")
+    
+    for i=1:M, j=1:M-i
+        
+        if !(sdata.rev_list[i]) && !(sdata.rev_list[j+i])
+            # Non-flipped config:
+            sdata.perm_ops[i][j] = deepcopy(sdata.perm_alt[1][i][j])
+            
+        elseif !(sdata.rev_list[i]) && sdata.rev_list[j+i]
+            # Right-flipped config:
+            sdata.perm_ops[i][j] = deepcopy(sdata.perm_alt[2][i][j])
+            
+            """
+            dag!(swapprime!(sdata.perm_ops[i][j],0,1))
+            sdata.perm_ops[i][j] = apply(sdata.perm_ops[i][j], phase_mpo)
+            dag!(swapprime!(sdata.perm_ops[i][j],0,1))
+            """
+            
+        elseif sdata.rev_list[i] && !(sdata.rev_list[j+i])
+            # Left-flipped config:
+            sdata.perm_ops[i][j] = deepcopy(sdata.perm_alt[3][i][j])
+            
+            """
+            sdata.perm_ops[i][j] = apply(sdata.perm_ops[i][j], phase_mpo)
+            """
+            
+        elseif sdata.rev_list[i] && sdata.rev_list[j+i]
+            # Double-flipped config:
+            sdata.perm_ops[i][j] = deepcopy(sdata.perm_alt[4][i][j])
+            
+            """
+            sdata.perm_ops[i][j] = apply(sdata.perm_ops[i][j], phase_mpo)
+            dag!(swapprime!(sdata.perm_ops[i][j],0,1))
+            sdata.perm_ops[i][j] = apply(sdata.perm_ops[i][j], phase_mpo)
+            dag!(swapprime!(sdata.perm_ops[i][j],0,1))
+            """
+            
+        end
+        
+    end
+    
+end
+
+
+function ReverseStates!(
+        sdata::SubspaceProperties,
+        j_list::Vector{Int};
+        verbose=false
+    )
+    
+    if verbose
+        println("Reversing states...")
+    end
+    
+    for j in j_list
+        sdata.psi_list[j] = ReverseMPS(sdata.psi_list[j])
+        sdata.ham_list[j] = ReverseMPO(sdata.ham_list[j])
+        sdata.rev_list[j] = !(sdata.rev_list[j])
+    end
+    
+    if verbose
+        println("Done!")
+    end
+
+    SelectPermOps!(sdata)
+    
+end
+
+
+function UnReverseStates!(
+        sdata::SubspaceProperties;
+        verbose=false
+    )
+    
+    for j=1:sdata.mparams.M
+        if sdata.rev_list[j]
+            sdata.psi_list[j] = ReverseMPS(sdata.psi_list[j])
+            sdata.rev_list[j]
+        end
+    end
+    
+    GenPermOps!(sdata, verbose=verbose)
     
 end
 

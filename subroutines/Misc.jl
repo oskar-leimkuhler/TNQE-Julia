@@ -84,3 +84,157 @@ end
 function Fstun(E_0, E_1, gamma)
     return 1.0 - exp(gamma*(E_1-E_0))
 end
+
+##############################################################################
+
+
+function OnSiteSwap!(T, site; do_fswap=false)
+    
+    ids = vcat(site, uniqueinds(inds(T), site))
+    
+    #println("")
+    #display(ids)
+    #println("")
+    
+    TA = Array(T, ids)
+    
+    TA[2:3] = [TA[3],TA[2]]
+    
+    if do_fswap
+        TA[4] *= -1.0
+    end
+    
+    T=ITensor(TA,ids)
+    
+end
+
+
+# return a reversed copy of an MPS:
+
+function ReverseMPS(psi)
+    
+    N = length(psi)
+    
+    sites=siteinds(psi)
+    
+    psi2 = MPS(N)
+    
+    for p=1:N
+        
+        q=N-p+1
+        
+        si_p = sites[p]
+        si_q = sites[q]
+        
+        Tq = deepcopy(psi[q])
+        
+        replaceind!(Tq, si_q, si_p)
+        
+        """
+        # Swap the on-site ordering:
+        OnSiteSwap!(Tq, si_p)
+        """
+        
+        psi2[p] = Tq
+        
+    end
+    
+    return psi2
+    
+end
+
+
+function ReverseMPO(mpo)
+    
+    N = length(mpo)
+    
+    sites=siteinds(mpo)
+    
+    mpo2 = MPO(N)
+    
+    for p=1:N
+        
+        q=N-p+1
+        
+        si_p = sites[p]
+        si_q = sites[q]
+        
+        Tq = deepcopy(mpo[q])
+        
+        replaceind!(Tq, si_q[1], si_p[1])
+        replaceind!(Tq, si_q[2], si_p[2])
+        
+        """
+        # Swap the on-site ordering:
+        OnSiteSwap!(Tq, si_p[1])
+        OnSiteSwap!(Tq, si_p[2])
+        """
+        
+        mpo2[p] = Tq
+        
+    end
+    
+    return mpo2
+    
+end
+
+
+function ReverseMPS2(psi)
+    
+    maxdim = maxlinkdim(psi)
+    sites = siteinds(psi)
+    N = length(psi)
+    
+    psi = Permute(
+        psi,
+        sites,
+        collect(1:N),
+        reverse(collect(1:N))
+    )
+    
+    truncate!(psi, maxdim=maxdim)
+    normalize!(psi)
+    
+    return psi
+    
+end
+
+
+function ReverseMPO2(mpo, sites)
+    
+    maxdim = maxlinkdim(mpo)
+    sites = siteinds(mpo, plev=0)
+    N = length(mpo)
+    
+    #println(siteinds(mpo))
+    
+    dag!(mpo)
+    
+    mpo = PermuteMPO(
+        mpo,
+        sites,
+        collect(1:N),
+        reverse(collect(1:N)),
+        tol=1e-16
+    )
+    
+    dag!(mpo)
+    swapprime!(mpo, 0,1)
+    
+    #println(siteinds(mpo))
+    
+    mpo = PermuteMPO(
+        mpo,
+        sites,
+        collect(1:N),
+        reverse(collect(1:N)),
+        tol=1e-16
+    )
+    
+    swapprime!(mpo, 0,1)
+    
+    truncate!(mpo, maxdim=maxdim)
+    
+    return mpo
+    
+end

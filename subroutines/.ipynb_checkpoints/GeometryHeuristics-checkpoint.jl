@@ -365,7 +365,7 @@ end
 
 # Computes the entanglements over bipartitions
 # of a (single-state) DMRG subspace
-function ComputeBipartites(dmrg_subspace; cuts=10, ns=2, verbose=false)
+function ComputeBipartites(dmrg_subspace; state=1, cuts=10, ns=2, verbose=false)
     
     mpm = dmrg_subspace.mparams
     cdata = dmrg_subspace.chem_data
@@ -380,7 +380,7 @@ function ComputeBipartites(dmrg_subspace; cuts=10, ns=2, verbose=false)
     
     entropies = []
     for l=1:cuts
-        push!(entropies, BipartiteEntanglement(bipartitions[l], dmrg_subspace.psi_list[1], dmrg_subspace.ord_list[1]))
+        push!(entropies, BipartiteEntanglement(bipartitions[l], dmrg_subspace.psi_list[state], dmrg_subspace.ord_list[state]))
     end
     
     return bipartitions, entropies
@@ -506,8 +506,9 @@ function BipartiteFitness(ord_list, bipartitions, entropies, maxdim; statevec=no
             cj2 = statevec[j]^2
             S_max1 += cj2*( ln4*k_j_list[j] + lnm - log(cj2) )
         end
-        S_max2 = minimum([length(A_sites),length(B_sites)])*ln4
-        S_max = minimum([xi*S_max1,S_max2])
+        #S_max2 = minimum([length(A_sites),length(B_sites)])*ln4
+        #S_max = minimum([xi*S_max1,S_max2])
+        S_max = S_max1
         
         S_est = entropies[l]
         
@@ -522,14 +523,78 @@ function BipartiteFitness(ord_list, bipartitions, entropies, maxdim; statevec=no
 end
 
 
+function CompositeCostFunc(ord_list, bipartitions, entropies, maxdim; statevec=statevec, zeta_list=zeta_list, xi=xi, wt=0.0, baseline=[0.1,0.5])
+    
+    M = length(ord_list)
+    
+    if wt==0.0
+        cost=0.0
+    else
+        cost = BipartiteFitness(
+            ord_list, 
+            bipartitions[1], 
+            entropies[1], 
+            maxdim, 
+            statevec=statevec, 
+            zeta=zeta_list[1], 
+            xi=xi
+        )
+
+        cost -= baseline[1]
+        cost *= wt
+        cost *= 1.0/baseline[1]
+    end
+    
+    #println("\n###\n")
+    #println("cost-adds:")
+    
+    for j=1:length(ord_list)
+        
+        cost_add = BipartiteFitness(
+            [ord_list[j]], 
+            bipartitions[j], 
+            entropies[j], 
+            maxdim, 
+            statevec=nothing, 
+            zeta=zeta_list[j], 
+            xi=xi
+        )
+        
+        #println(cost_add)
+        
+        cost_add -= baseline[2]
+        cost_add *= (1.0-wt)
+        cost_add *= 1.0/(baseline[2]*M)
+        
+        cost += cost_add
+        
+    end
+    
+    #println("\n###\n")
+    
+    return cost
+end
+
+
 # Optimize a set of orderings given a set of bipartite entropies:
-function BipartiteAnnealing(ord_list, bipartitions, entropies, maxdim; anchor=false, anum=1, maxiter=1000, swap_mult=3.0, alpha=1.0, stun=false, gamma=10.0, zeta = 0.01, xi=0.4, opt_statevec=false, delta=0.01, verbose=false)
+function BipartiteAnnealing(ord_list, bipartitions, entropies, maxdim; anchor=false, anum=1, maxiter=1000, swap_mult=3.0, alpha=1.0, stun=false, gamma=10.0, zeta = 0.01, xi=0.4, opt_statevec=false, delta=0.01, costfunc="simple", wt=0.0, baseline=[0.1,0.5], zeta_list=nothing, verbose=false)
     
     M = length(ord_list)
     
     statevec = [1.0/sqrt(M) for j=1:M]
     
-    f = BipartiteFitness(ord_list, bipartitions, entropies, maxdim, statevec=statevec, zeta=zeta, xi=xi)
+    if zeta_list==nothing
+        zeta_list = [zeta for j=1:M]
+    end
+    
+    if costfunc=="simple"
+        f = BipartiteFitness(ord_list, bipartitions, entropies, maxdim, statevec=statevec, zeta=zeta, xi=xi)
+    else
+        
+        f = CompositeCostFunc(ord_list, bipartitions, entropies, maxdim, statevec=statevec, zeta_list=zeta_list, xi=xi, wt=wt, baseline=baseline)
+        
+    end
+    
     N_sites = length(ord_list[1])
     f_best = f
     
@@ -566,7 +631,11 @@ function BipartiteAnnealing(ord_list, bipartitions, entropies, maxdim; anchor=fa
             normalize!(statevec)
         end
             
-        f_new = BipartiteFitness(ord_listc, bipartitions, entropies, maxdim, statevec=statevec, zeta=zeta, xi=xi)
+        if costfunc=="simple"
+            f_new = BipartiteFitness(ord_listc, bipartitions, entropies, maxdim, statevec=statevec, zeta=zeta, xi=xi)
+        else
+            f_new = CompositeCostFunc(ord_listc, bipartitions, entropies, maxdim, statevec=statevec, zeta_list=zeta_list, xi=xi, wt=wt, baseline=baseline)
+        end
 
         # Accept move with some probability
         beta = alpha*s

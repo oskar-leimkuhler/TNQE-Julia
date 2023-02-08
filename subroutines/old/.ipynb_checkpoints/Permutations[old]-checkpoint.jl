@@ -1,3 +1,20 @@
+# Builds the SWAP ITensor object between sites idx and idx+1:
+function BuildSwap(sites, idx; dim=2)
+    
+    swap_array = zeros((dim,dim,dim,dim))
+    
+    for i=1:dim, j=1:dim, ip=1:dim, jp=1:dim
+        swap_array[i,j,ip,jp] = Int(ip==j && jp==i)
+    end
+
+    swap = ITensor(swap_array, dag(sites[idx]),dag(sites[idx+1]),sites[idx]',sites[idx+1]')
+    
+    return swap
+    
+end
+
+
+
 function LeftRightSwap(sites, idx, link, dim)
     
     vecs = Matrix(I(dim^2))

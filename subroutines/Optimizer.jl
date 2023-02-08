@@ -52,7 +52,7 @@ end
 
 # Return a subspace shadow generated
 # by Schmidt-decomposing each state at site p:
-function SiteDecomposition(sdata, U_list, sigma_list, V_list, H_diag, H_offdiag, S_offdiag, p)
+function SiteDecomposition(sdata, U_list, sigma_list, V_list, H_diag, H_offdiag, S_offdiag, p; anchor=false)
     
     M = sdata.mparams.M
     tol = sdata.mparams.psi_tol
@@ -64,24 +64,47 @@ function SiteDecomposition(sdata, U_list, sigma_list, V_list, H_diag, H_offdiag,
     
     for j=1:M
         
-        sigma = diag(Array(sigma_list[j].tensor))
-        
-        m_eff = length(sigma)
-        
-        ids = inds(H_diag[j], plev=0)
-        
-        for k=1:m_eff
+        if anchor && j==1
             
-            S_jk = ITensor(zeros((dim(ids[1]),dim(ids[2]))),ids[1],ids[2])
-            
-            S_jk[ids[1]=>k,ids[2]=>k] = 1.0
+            sigma = diag(Array(sigma_list[j].tensor))
 
-            push!(psi_decomp, S_jk)
+            m_eff = length(sigma)
+
+            ids = inds(H_diag[j], plev=0)
+
+            S_jk = ITensor(zeros((dim(ids[1]),dim(ids[2]))),ids[1],ids[2])
+                
+            for k=1:m_eff
+
+                S_jk[ids[1]=>k,ids[2]=>k] = sigma[k]
+
+            end
             
-        end
+            push!(psi_decomp, S_jk)
+            push!(vec_list, [1.0])
+            push!(M_list, 1)
+            
+        else
         
-        push!(vec_list, sigma)
-        push!(M_list, m_eff)
+            sigma = diag(Array(sigma_list[j].tensor))
+
+            m_eff = length(sigma)
+
+            ids = inds(H_diag[j], plev=0)
+
+            for k=1:m_eff
+
+                S_jk = ITensor(zeros((dim(ids[1]),dim(ids[2]))),ids[1],ids[2])
+
+                S_jk[ids[1]=>k,ids[2]=>k] = 1.0
+
+                push!(psi_decomp, S_jk)
+
+            end
+
+            push!(vec_list, sigma)
+            push!(M_list, m_eff)
+        end
         
     end
     
@@ -136,108 +159,6 @@ function SiteDecomposition(sdata, U_list, sigma_list, V_list, H_diag, H_offdiag,
             H_block[k,l] = scalar( psi_decomp_j[l] * dag(H_offdiag[i][j-i]) * setprime(dag(psi_decomp_i[k]),1) )
             S_block[k,l] = scalar( psi_decomp_j[l] * dag(S_offdiag[i][j-i]) * setprime(dag(psi_decomp_i[k]),1) )
         end
-            
-        H_full[i0:i1,j0:j1] = H_block
-        H_full[j0:j1,i0:i1] = transpose(H_block)
-        
-        S_full[i0:i1,j0:j1] = S_block
-        S_full[j0:j1,i0:i1] = transpose(S_block)
-        
-    end
-    
-    # Construct the "subspace shadow" object:
-    shadow = SubspaceShadow(
-        sdata.chem_data,
-        M_list,
-        sdata.mparams.thresh,
-        sdata.mparams.eps,
-        vec_list,
-        [],
-        H_full,
-        S_full,
-        zeros((M_gm,M_gm)),
-        zeros((M_gm,M_gm)),
-        zeros(M_gm),
-        zeros((M_gm,M_gm)),
-        0.0
-    )
-    
-    GenSubspaceMats!(shadow)
-    
-    SolveGenEig!(shadow)
-    
-    return shadow
-    
-end
-
-
-# Return a subspace shadow generated
-# by Schmidt-decomposing state k at site p:
-function OneStateSiteDecomposition(sdata, U_k, sigma_k, V_k, H_list, S_list, p, k)
-    
-    M = sdata.mparams.M
-    tol = sdata.mparams.psi_tol
-    m = sdata.mparams.psi_maxdim
-    
-    psi_decomp = []
-    vec = []
-        
-    sigma = diag(Array(sigma_k.tensor))
-        
-    m_eff = length(sigma)
-        
-    ids = inds(H_diag[j], plev=0)
-        
-    for j=1:m_eff
-            
-        S_jk = ITensor(zeros((dim(ids[1]),dim(ids[2]))),ids[1],ids[2])
-            
-        S_jk[ids[1]=>j,ids[2]=>j] = 1.0
-
-        push!(psi_decomp, S_jk)
-            
-    end
-        
-    vec = sigma
-    
-    M_gm = sdata.mparams.M
-    M_tot = M_gm+m_eff-1
-    
-    H_full = zeros((M_tot,M_tot))
-    S_full = zeros((M_tot,M_tot))
-    
-    k0 = k
-    k1 = k+m_eff-1
-    
-    # Existing blocks:
-    H_full[1:k0-1,1:k0-1] = sdata.H_mat[1:k-1,1:k-1]
-    H_full[k1+1:M_tot,k1+1:M_tot] = sdata.H_mat[k+1:M,k+1:M]
-    H_full[1:k0-1,k1+1:M_tot] = sdata.H_mat[1:k-1,k+1:M]
-    H_full[k1+1:M_tot,1:k0-1] = sdata.H_mat[k+1:M,1:k-1]
-    
-    S_full[1:k0-1,1:k0-1] = sdata.S_mat[1:k-1,1:k-1]
-    S_full[k1+1:M_tot,(k+m_eff-1):M_tot] = sdata.S_mat[k+1:M,k+1:M]
-    S_full[1:k0-1,k1+1:M_tot] = sdata.S_mat[1:k-1,k+1:M]
-    S_full[k1+1:M_tot,1:k0-1] = sdata.S_mat[k+1:M,1:k-1]
-    
-    # The middle block:
-    H_block = zeros((m_eff,m_eff))
-        
-    for i=k0:k1, j=k0:k1
-        H_block[i,j] = scalar( psi_decomp[i-k0+1] * dag(H_list[k]) * setprime(dag(psi_decomp[j-k0+1]),1) )
-        H_block[j,i] = H_block[i,j]
-    end
-        
-    H_full[k0:k1,k0:k1] = deepcopy(H_block)
-    S_full[k0:k1,k0:k1] = Matrix(I, m_eff, m_eff)
-    
-    # Off-diagonal blocks:
-    H_block = zeros((k-1,m_eff))
-    S_block = zeros((k-1,m_eff))
-    for i=1:k0-1, j=k0:k1
-        
-        H_block[i,j] = scalar( psi_decomp_j[l] * dag(H_offdiag[i][j-i]) * setprime(dag(psi_decomp_i[k]),1) )
-        S_block[k,l] = scalar( psi_decomp_j[l] * dag(S_offdiag[i][j-i]) * setprime(dag(psi_decomp_i[k]),1) )
             
         H_full[i0:i1,j0:j1] = H_block
         H_full[j0:j1,i0:i1] = transpose(H_block)
@@ -390,68 +311,37 @@ function UpdateBlocks!(sdata, p, Q_list, H_diag, H_offdiag, S_offdiag)
 end
 
 
-function OneStateTopBlocks(sdata::SubspaceProperties, k)
+function StatePrepCostFunc(
+        shadow::SubspaceShadow,
+        theta::Vector{Float64}
+    )
     
-    n = sdata.chem_data.N_spt
-    M = sdata.mparams.M
-
-    H_top = Any[1.0 for j=1:M]
-    S_top = Any[1.0 for j=1:M]
+    normalize!(theta)
     
-    # Initialize the lists:
-    H_top_list = [deepcopy(H_top)]
-    S_top_list = [deepcopy(S_top)]
+    M = length(shadow.M_list)
     
-    # Update the top blocks and push to list:
-    for p=n:(-1):3
-        
-        for j=1:M
-            
-            if j==k
-                H_top[j] *= sdata.psi_list[j][p] * sdata.ham_list[j][p] * setprime(dag(sdata.psi_list[j][p]),1)
-            else
-                yP = sdata.psi_list[j][p] * setprime(sdata.perm_ops[k][j-k][p],2,plev=1)
-                Hx = setprime(sdata.ham_list[k][p],2,plev=0) * setprime(dag(sdata.psi_list[k][p]),1)
-
-                H_top[j] *= yP
-                H_top[j] *= Hx
-
-                S_top[j] *= sdata.psi_list[j][p] * sdata.perm_ops[k][j-k][p] * setprime(dag(sdata.psi_list[k][p]),1)
-            end
-
-        end
-        
-        push!(H_top_list, deepcopy(H_top))
-        push!(S_top_list, deepcopy(S_top))
-
-    end
+    # Maximize von Neumann entropy:
+    f_entropy = 0.0
     
-    return reverse(H_top_list), reverse(S_top_list)
-    
-end
-
-
-function OneStateUpdateBlocks!(sdata, p, Q, H_list, S_list, k)
-    
-    M = sdata.mparams.M
+    # Minimize the condition number:
+    f_overlap = shadow.kappa
     
     for j=1:M
         
-        if j==k
-            H_list[j] *= Q * sdata.ham_list[j][p] * setprime(dag(Q),1)
-        else
-
-            yP = sdata.psi_list[j][p] * setprime(sdata.perm_ops[k][j-k][p],2,plev=1)
-            Hx = setprime(sdata.ham_list[k][p],2,plev=0) * setprime(dag(Q),1)
-
-            H_list[j] *= yP
-            H_list[j] *= Hx
-
-            S_list[j] *= sdata.psi_list[j][p] * sdata.perm_ops[k][j-k][p] * setprime(dag(Q),1)
-
-        end
-
+        j0 = sum(shadow.M_list[1:j-1])+1
+        j1 = sum(shadow.M_list[1:j])
+        
+        sig2 = (shadow.vec_list[j]).^(2)
+        
+        f_entropy += sum([sig2[k]*log(sig2[k]) for k=1:length(sig2)])
+        
+        #f_overlap += sum([abs(shadow.S_mat[j,k]) for k=(j+1):M])
+        
     end
+    
+    f_tot = theta[1]*shadow.E[1] + theta[2]*f_overlap - theta[3]*f_entropy
+    
+    return f_tot
     
 end
 
@@ -503,8 +393,16 @@ function MultiGeomAnneal!(
         alpha=1e2,
         delta=1e-2,
         gamma=1.0,
+        costfunc="energy",
+        theta=[1.0,1.0,1.0],
         stun=true
     )
+    
+    if costfunc=="energy"
+        E_best = shadow.E[1]
+    elseif costfunc=="stateprep"
+        E_best = StatePrepCostFunc(shadow, theta)
+    end
     
     E_best = shadow.E[1]
             
@@ -525,20 +423,28 @@ function MultiGeomAnneal!(
         # re-compute matrix elements and diagonalize
         GenSubspaceMats!(sh2)
         SolveGenEig!(sh2)
+        
+        if costfunc=="energy"
+            E_old = shadow.E[1]
+            E_new = sh2.E[1]
+        elseif costfunc=="stateprep"
+            E_old = StatePrepCostFunc(shadow, theta)
+            E_new = StatePrepCostFunc(sh2, theta)
+        end
 
         # Accept move with some probability
         beta = alpha*l#^4
 
         if stun
-            F_0 = Fstun(E_best, shadow.E[1], gamma)
-            F_1 = Fstun(E_best, sh2.E[1], gamma)
+            F_0 = Fstun(E_best, E_old, gamma)
+            F_1 = Fstun(E_best, E_new, gamma)
             P = ExpProb(F_1, F_0, beta)
         else
-            P = ExpProb(shadow.E[1], sh2.E[1], beta)
+            P = ExpProb(E_old, E_new, beta)
         end
 
-        if sh2.E[1] < E_best
-            E_best = sh2.E[1]
+        if E_new < E_best
+            E_best = E_new
         end
 
         if rand(Float64) < P
@@ -562,10 +468,68 @@ end
 function MultiGeomGenEig!(
         shadow::SubspaceShadow, 
         thresh::String,
-        eps::Float64
+        eps::Float64;
+        costfunc="energy",
+        theta=[1.0,1.0,1.0,1.0]
     )
     
-    E, C, kappa = SolveGenEig(shadow.H_full, shadow.S_full; thresh=thresh, eps=eps)
+    M_list = shadow.M_list
+    M_tot = sum(M_list)
+    M_gm = length(M_list)
+    
+    # Construct 
+    
+    if costfunc=="energy"
+        
+        E, C, kappa = SolveGenEig(shadow.H_full, shadow.S_full; thresh=thresh, eps=eps)
+        
+    elseif costfunc=="stateprep"
+        
+        # Subspace overlap minimization matrix:
+        A = zeros((M_tot, M_tot))
+        
+        for i=1:M_gm, j=1:M_gm
+            
+            if i!=j
+                i0 = sum(M_list[1:i-1])+1
+                i1 = sum(M_list[1:i])
+                j0 = sum(M_list[1:j-1])+1
+                j1 = sum(M_list[1:j])
+
+                A[i0:i1,i0:i1] += Symmetric(shadow.S_full[i0:i1,j0:j1]*shadow.S_full[j0:j1,i0:i1])
+            end
+            
+        end
+        
+        # Offdiagonal H-element maximization matrix:
+        D = zeros((M_tot, M_tot))
+        
+        for i=1:M_gm, j=1:M_gm
+            
+            if i!=j
+                i0 = sum(M_list[1:i-1])+1
+                i1 = sum(M_list[1:i])
+                j0 = sum(M_list[1:j-1])+1
+                j1 = sum(M_list[1:j])
+
+                D[i0:i1,i0:i1] += Symmetric(shadow.H_full[i0:i1,j0:j1]*shadow.H_full[j0:j1,i0:i1])
+            end
+            
+        end
+        
+        # Entanglement growth matrix:
+        B = zeros((M_tot, M_tot))
+        
+        for i=1:M_gm
+            i0 = sum(M_list[1:i-1])+1
+            i1 = sum(M_list[1:i])
+            
+            B[i0:i1,i0:i1] = Matrix(I, (M_list[i],M_list[i])) - ones((M_list[i],M_list[i]))
+        end
+        
+        E, C, kappa = ModifiedGenEig(shadow.H_full, shadow.S_full, [A, B, D], theta; eps=eps)
+        
+    end
     
     #println(E[1])
     
@@ -604,6 +568,9 @@ function MultiGeomOptim!(
         thresh="projection",
         eps=1e-12,
         restrict_svals=false,
+        costfunc="energy",
+        theta=[1.0,1.0,1.0,1.0],
+        anchor=false,
         verbose=false
     )
     
@@ -619,9 +586,9 @@ function MultiGeomOptim!(
         
         # Sweep noise parameter:
         if s > length(noise)
-            eps = noise[end]
+            ns = noise[end]
         else
-            eps = noise[s]
+            ns = noise[s]
         end
         
         # Right-orthogonalize all vectors:
@@ -675,7 +642,7 @@ function MultiGeomOptim!(
             
             # Generate the state decompositions \\
             # ...and store as a subspace shadow object:
-            shadow = SiteDecomposition(sdata, U_list, sigma_list, V_list, H_diag, H_offdiag, S_offdiag, p)
+            shadow = SiteDecomposition(sdata, U_list, sigma_list, V_list, H_diag, H_offdiag, S_offdiag, p, anchor=anchor)
             
             M_tot = sum(shadow.M_list)
             
@@ -692,7 +659,7 @@ function MultiGeomOptim!(
             if method=="annealing"
                 
                 # Simulated annealing:
-                MultiGeomAnneal!(shadow, c0, maxiter, alpha=alpha, delta=delta, gamma=gamma, stun=stun)
+                MultiGeomAnneal!(shadow, c0, maxiter, alpha=alpha, delta=delta, gamma=gamma, stun=stun, costfunc=costfunc, theta=theta)
                 
             elseif method=="bboptim"
                 
@@ -702,12 +669,12 @@ function MultiGeomOptim!(
             elseif method=="geneig"
                 
                 # Full diagonalization:
-                MultiGeomGenEig!(shadow, thresh, eps)
+                MultiGeomGenEig!(shadow, thresh, eps, costfunc=costfunc, theta=theta)
                 
             end
             
             # Replace the state tensors:
-            ReplaceStates!(sdata, U_list, sigma_list, V_list, p, shadow.vec_list, eps)
+            ReplaceStates!(sdata, U_list, sigma_list, V_list, p, shadow.vec_list, ns)
             
             GenSubspaceMats!(shadow)
             SolveGenEig!(shadow)
@@ -728,9 +695,9 @@ function MultiGeomOptim!(
             end
             
             # Free up some memory:
-            #H_top_diag_list[p] = [nothing]
-            #H_top_offdiag_list[p] = [[nothing]]
-            #S_top_offdiag_list[p] = [[nothing]]
+            H_top_diag_list[p] = [nothing]
+            H_top_offdiag_list[p] = [[nothing]]
+            S_top_offdiag_list[p] = [[nothing]]
             
         end
         
@@ -745,150 +712,149 @@ function MultiGeomOptim!(
 end
 
 
-function SingleGeomOptim!(
+# Co-optimize the parameters and the geometries:
+function CoGeomOptim!(
         sdata::SubspaceProperties; 
         sweeps=1,
-        maxiter=1000,
-        method="bboptim",
-        delta=1e-2,
-        alpha=1e2,
+        maxiter=20,
+        mg_maxiter=8000,
+        method="geneig",
+        swap_mult = 0.5,
+        alpha=1e-3,
         stun=true,
-        gamma=1.0,
+        gamma=1e2,
         noise=[0.0],
-        thresh="projection",
-        eps=1e-12,
+        thresh="inversion",
+        eps=1e-8,
         restrict_svals=false,
+        costfunc="energy",
+        theta=[1.0,1.0,1.0,1.0],
+        anchor=false,
+        n_flip=0,
         verbose=false
     )
     
+    N = sdata.chem_data.N_spt
     M = sdata.mparams.M
     
-    n = sdata.chem_data.N_spt
+    # Initialize the cost function:
+    f = sdata.E[1]
+    f_best = f
     
-    E_min = sdata.E[1]
-    kappa = sdata.kappa
-    
-    # The sweep loop:
-    for l=1:loops
+    for l=1:maxiter
         
-        # Sweep noise parameter:
-        if l > length(noise)
-            eps = noise[end]
-        else
-            eps = noise[l]
+        if verbose
+            println("\nLoop $(l) of $(maxiter):")
         end
         
-        # Optimize state k:
-        for k=1:sdata.mparams.M
-            
-            for s=1:sweeps
-                
-                # Right-orthogonalize all vectors:
-                for j=1:M
-                    #truncate!(sdata.psi_list[j], cutoff=1e-12, min_blockdim=3, maxdim=3)
-                    orthogonalize!(sdata.psi_list[j],1)
-                end
-                
-                # Pre-contract the "top" blocks prior to sweep:
-                H_top_list, S_top_list = OneStateTopBlocks(sdata, k)
-
-                # Initialize the "bottom" blocks:
-                H_bot = Any[1.0 for i=1:M]
-                S_bot = Any[1.0 for i=1:M]
-
-                # The site loop:
-                for p=1:n-1
-
-                    # Select the correct "top" blocks:
-                    H_top = H_top_list[p]
-                    S_top = S_top_list[p]
-
-                    # Decompose state k at p:
-                    U,S,V = SiteSVD(sdata.psi_list[k],p, restrict_svals=restrict_svals)
-
-                    # Make a copy for later:
-                    H_bot_copy = deepcopy(H_bot)
-                    S_bot_copy = deepcopy(S_bot)
-
-                    # contract the final layer of each block:
-                    OneStateUpdateBlocks!(sdata, p, U, H_bot, S_bot, k)
-                    OneStateUpdateBlocks!(sdata, p+1, V, H_top, S_top, k)
+        if l > length(noise)
+            ns = noise[end]
+        else
+            ns = noise[l]
+        end
         
-                    # Pre-contract the block tensors for obtaining the H and S matrix elements:
-                    H_list = [H_top[j]*H_bot[j] for j=1:M]
-                    S_list = [S_top[j]*S_bot[j] for j=1:M]
+        # Make a copy of the sdata:
+        new_sdata = copy(sdata)
+        
+        new_ord_list = deepcopy(new_sdata.ord_list)
+    
+        # Try permuting each ordering in the list:
+        for (j,ord) in enumerate(new_ord_list)
+            
+            # Number of applied swaps to generate a new ordering (sampled from an exponential distribution):
+            num_swaps = Int(floor(swap_mult*randexp()[1]))
 
-                    # Generate the state decompositions \\
-                    # ...and store as a subspace shadow object:
-                    shadow = SiteDecomposition(sdata, U, sigma, V, H_list, S_list, p)
-
-                    M_tot = sum(shadow.M_list)
-
-                    c0 = zeros(M_tot)
-
-                    for j=1:length(shadow.M_list)
-                        j0 = sum(shadow.M_list[1:j-1])+1
-                        j1 = sum(shadow.M_list[1:j])
-                        c0[j0:j1] = shadow.vec_list[j]
-                    end
-
-                    shadow_copy = copy(shadow)
-
-                    if method=="annealing"
-
-                        # Simulated annealing:
-                        MultiGeomAnneal!(shadow, c0, maxiter, alpha=alpha, delta=delta, gamma=gamma, stun=stun)
-
-                    elseif method=="bboptim"
-
-                        # Black-box optimizer:
-                        MultiGeomBB!(shadow, c0, maxiter)
-
-                    elseif method=="geneig"
-
-                        # Full diagonalization:
-                        MultiGeomGenEig!(shadow, thresh, eps)
-
-                    end
-
-                    # Replace the state tensors:
-                    ReplaceStates!(sdata, U_list, sigma_list, V_list, p, shadow.vec_list, eps)
-
-                    GenSubspaceMats!(shadow)
-                    SolveGenEig!(shadow)
-                    E_min = shadow.E[1]
-                    kappa = shadow.kappa 
-
-                    # Update the bottom blocks:
-                    new_U_list = [sdata.psi_list[j][p] for j=1:M]
-                    UpdateBlocks!(sdata, p, new_U_list, H_bot_diag_copy, H_bot_offdiag_copy, S_bot_offdiag_copy)
-
-                    H_bot_diag = H_bot_diag_copy
-                    H_bot_offdiag = H_bot_offdiag_copy
-                    S_bot_offdiag = S_bot_offdiag_copy
-
-                    if verbose
-                        print("Sweep: [$(s)/$(sweeps)]; site: [$(p)/$(sdata.chem_data.N_spt-1)]; E_min = $(E_min); kappa = $(kappa)             \r")
-                        flush(stdout)
-                    end
-
-                    # Free up some memory:
-                    #H_top_diag_list[p] = [nothing]
-                    #H_top_offdiag_list[p] = [[nothing]]
-                    #S_top_offdiag_list[p] = [[nothing]]
-
-                end
-
-                # After each sweep, truncate back to the max bond dim:
-                for j=1:M
-                    truncate!(sdata.psi_list[j], maxdim=sdata.mparams.psi_maxdim)
-                    normalize!(sdata.psi_list[j])
-                end
-
+            # Apply these swaps randomly:
+            for swap=1:num_swaps
+                p = rand(1:N-1)
+                ord[p:p+1]=reverse(ord[p:p+1])
             end
             
         end
         
+        #PrintPrimedInds(new_sdata)
+        
+        # Re-generate the permutation operators:
+        UpdatePermOps!(new_sdata, new_ord_list)
+        new_sdata.ord_list = new_ord_list
+        #GenPermOps!(new_sdata, verbose=verbose)
+        GenHams!(new_sdata)
+        
+        #PrintPrimedInds(new_sdata)
+        
+        # Flip the states:
+        if n_flip != 0
+            j_list = shuffle(collect(1:M))[1:n_flip]
+            ReverseStates!(new_sdata, j_list, verbose=false)
+        end
+        
+        # Optimize the states:
+        MultiGeomOptim!(
+            new_sdata, 
+            sweeps=sweeps, 
+            method=method,
+            maxiter=mg_maxiter,
+            noise=[ns],
+            thresh=thresh,
+            eps=eps,
+            restrict_svals=restrict_svals,
+            costfunc=costfunc,
+            theta=theta,
+            verbose=verbose
+        )
+        
+        GenSubspaceMats!(new_sdata)
+        SolveGenEig!(new_sdata)
+        
+        # New cost function:
+        f_new = new_sdata.E[1]
+        
+        # Accept move with some probability
+        beta = alpha*l/maxiter
+
+        if stun
+            F_0 = Fstun(f_best, f, gamma)
+            F_1 = Fstun(f_best, f_new, gamma)
+            P = ExpProb(F_1, F_0, beta)
+        else
+            P = ExpProb(f, f_new, beta)
+        end
+        
+        #println(f)
+        #println(f_new)
+        #println(P)
+
+        if f_new < f_best
+            f_best = f_new
+        end
+
+        if rand()[1] < P
+            # Accept move:
+            sdata.ord_list = new_sdata.ord_list
+            sdata.rev_list = new_sdata.rev_list
+            sdata.psi_list = new_sdata.psi_list
+            sdata.ham_list = new_sdata.ham_list
+            sdata.perm_ops = new_sdata.perm_ops
+            sdata.perm_alt = new_sdata.perm_alt
+            sdata.H_mat = new_sdata.H_mat
+            sdata.S_mat = new_sdata.S_mat
+            sdata.E = new_sdata.E
+            sdata.C = new_sdata.C
+            sdata.kappa = new_sdata.kappa
+            
+            f = f_new
+            
+            if verbose
+                println("\nAccept!")
+            end
+        else
+            if verbose
+                println("\nReject!")
+            end
+        end
+        
+        
     end
+    
     
 end
