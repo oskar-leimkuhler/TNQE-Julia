@@ -49,10 +49,34 @@ def RunPySCF(config, gen_cubes=False):
             
             if run_rohf:
                 rhf_obj = pyscf.scf.ROHF(mol_obj)
+                e_rhf = rhf_obj.kernel()
             else:
-                rhf_obj = pyscf.scf.RHF(mol_obj)
-            
-            e_rhf = rhf_obj.kernel()
+                """
+                mf = pyscf.scf.RHF(mol_obj)
+                mf.conv_tol=1e-2
+                mf.kernel()
+                mo_init = mf.mo_coeff
+                mocc_init = mf.mo_occ
+
+                rhf_obj = pyscf.scf.RHF(mol_obj).newton()
+                e_rhf = rhf_obj.kernel(mo_init, mocc_init)
+                
+                rhf_obj = pyscf.scf.UKS(mol_obj).newton()
+                e_rhf = rhf_obj.kernel()
+                """
+                
+                rhf_obj1 = pyscf.scf.RHF(mol_obj)
+                rhf_obj1.DIIS = pyscf.scf.ADIIS
+                #rhf_obj.conv_tol=1e-5
+                e_rhf1 = rhf_obj1.kernel()
+                
+                mo_init = rhf_obj1.mo_coeff
+                mocc_init = rhf_obj1.mo_occ
+                
+                rhf_obj = pyscf.scf.RHF(mol_obj).newton()
+                #rhf_obj2.DIIS = pyscf.scf.EDIIS
+                #rhf_obj.conv_tol=1e-5
+                e_rhf = rhf_obj.kernel(mo_init,mocc_init)
 
             if run_fci:
                 fci_obj = fci.FCI(rhf_obj)

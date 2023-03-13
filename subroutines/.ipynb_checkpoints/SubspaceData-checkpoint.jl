@@ -6,7 +6,7 @@ using HDF5
 import Base: copy
 
 
-struct MetaParameters
+mutable struct MetaParameters
     # Subspace dimension:
     M::Int
     M_ex::Int
@@ -15,8 +15,6 @@ struct MetaParameters
     psi_tol::Float64
     ham_maxdim::Int
     ham_tol::Float64
-    spatial::Bool
-    spinpair::Bool
     singleham::Bool
     # Permutation parameters:
     perm_maxdim::Int
@@ -37,11 +35,13 @@ mutable struct SubspaceProperties
     sites::Vector
     dflt_sweeps::Sweeps
     ord_list::Vector{Vector{Int}}
-    rev_list::Vector{Bool}
+    #rev_list::Vector{Bool}
     psi_list::Vector{MPS}
     ham_list::Vector{MPO}
     perm_ops::Vector{Vector{MPO}}
-    perm_alt::Vector{Vector{Vector{MPO}}}
+    rev_flag::Vector{Vector{Bool}}
+    tethers::Vector{Vector{MPS}}
+    #perm_alt::Vector{Vector{Vector{MPO}}}
     #perm_hams::Vector{Vector{MPO}}
     H_mat::Matrix{Float64}
     S_mat::Matrix{Float64}
@@ -55,13 +55,12 @@ end
 function GenSubspace(
         chem_data,
         M;
+        stype="Electron",
         # MPS/MPO constructor parameters:
         psi_maxdim=8,
         psi_tol=1e-12,
         ham_maxdim=512,
         ham_tol=1e-12,
-        spatial=true,
-        spinpair=false,
         singleham=false,
         # Permutation parameters:
         perm_maxdim=512,
@@ -86,8 +85,6 @@ function GenSubspace(
         psi_tol,
         ham_maxdim,
         ham_tol,
-        spatial,
-        spinpair,
         singleham,
         # Permutation parameters:
         perm_maxdim,
@@ -99,10 +96,14 @@ function GenSubspace(
     
     # Default sites:
     if sites == nothing
-        if spatial == true
-            sites = siteinds("Electron", chemical_data.N_spt, conserve_qns=true)
+        if stype=="Electron"
+            sites = siteinds("Electron", chem_data.N_spt, conserve_qns=true)
+        elseif stype=="Fermion"
+            sites = siteinds("Fermion", chem_data.N, conserve_qns=true)
+        elseif stype=="Qubit"
+            sites = siteinds("Qubit", chem_data.N)
         else
-            sites = siteinds("Fermion", chemical_data.N, conserve_qns=true)
+            println("Invalid site type!")
         end
     end
     
@@ -116,17 +117,19 @@ function GenSubspace(
     end
     
     # Initialize with empty data:
-    sdata = SubspaceProperties(
+    sd = SubspaceProperties(
         chem_data,
         mparams,
         sites,
         dflt_sweeps,
         [],
-        [false for j=1:mparams.M],
+        #[false for j=1:mparams.M],
         [],
         [],
         [],
         [],
+        [],
+        #[],
         #[],
         zeros((mparams.M,mparams.M)),
         zeros((mparams.M,mparams.M)),
@@ -135,30 +138,32 @@ function GenSubspace(
         0.0
     )
     
-    return sdata
+    return sd
     
 end
 
 
-function copy(sdata::SubspaceProperties)
+function copy(sd::SubspaceProperties)
     
     subspace_copy = SubspaceProperties(
-        sdata.chem_data,
-        sdata.mparams,
-        sdata.sites,
-        sdata.dflt_sweeps,
-        deepcopy(sdata.ord_list),
-        deepcopy(sdata.rev_list),
-        deepcopy(sdata.psi_list),
-        deepcopy(sdata.ham_list),
-        deepcopy(sdata.perm_ops),
-        deepcopy(sdata.perm_alt),
-        #deepcopy(sdata.perm_hams),
-        deepcopy(sdata.H_mat),
-        deepcopy(sdata.S_mat),
-        deepcopy(sdata.E),
-        deepcopy(sdata.C),
-        sdata.kappa
+        sd.chem_data,
+        sd.mparams,
+        sd.sites,
+        sd.dflt_sweeps,
+        deepcopy(sd.ord_list),
+        #deepcopy(sd.rev_list),
+        deepcopy(sd.psi_list),
+        deepcopy(sd.ham_list),
+        deepcopy(sd.perm_ops),
+        deepcopy(sd.rev_flag),
+        deepcopy(sd.tethers),
+        #deepcopy(sd.perm_alt),
+        #deepcopy(sd.perm_hams),
+        deepcopy(sd.H_mat),
+        deepcopy(sd.S_mat),
+        deepcopy(sd.E),
+        deepcopy(sd.C),
+        sd.kappa
     )
     
     return subspace_copy
@@ -166,37 +171,54 @@ function copy(sdata::SubspaceProperties)
 end
 
 
+function copyto!(sd1::SubspaceProperties, sd2::SubspaceProperties)
+    
+    sd1.ord_list = deepcopy(sd2.ord_list)
+    sd1.psi_list = deepcopy(sd2.psi_list)
+    sd1.ham_list = deepcopy(sd2.ham_list)
+    sd1.perm_ops = deepcopy(sd2.perm_ops)
+    sd1.rev_flag = deepcopy(sd2.rev_flag)
+    sd1.tethers = deepcopy(sd2.tethers)
+    sd1.H_mat = deepcopy(sd2.H_mat)
+    sd1.S_mat = deepcopy(sd2.S_mat)
+    sd1.E = deepcopy(sd2.E)
+    sd1.C = deepcopy(sd2.C)
+    sd1.kappa = deepcopy(sd2.kappa)
+    
+end
+
+
 function GenStates!(
-        sdata::SubspaceProperties;
+        sd::SubspaceProperties;
         ovlp_opt=false,
         sweeps=nothing,
         weight=1.0,
         prior_states=[],
         prior_ords=[],
+        denseify=false,
         verbose=false
     )
     
     if sweeps==nothing
-        sweeps = sdata.dflt_sweeps
+        sweeps = sd.dflt_sweeps
     end
     
     # Generate a set of states:
-    sdata.psi_list, sdata.ham_list = GenStates(
-        sdata.chem_data, 
-        sdata.sites, 
-        sdata.ord_list, 
+    sd.psi_list, sd.ham_list = GenStates(
+        sd.chem_data, 
+        sd.sites, 
+        sd.ord_list, 
         sweeps, 
         ovlp_opt=ovlp_opt,
         weight=weight,
         prior_states=prior_states,
         prior_ords=prior_ords,
-        perm_tol=sdata.mparams.perm_tol, 
-        perm_maxdim=sdata.mparams.perm_maxdim, 
-        ham_tol=sdata.mparams.ham_tol, 
-        ham_maxdim=sdata.mparams.ham_maxdim, 
-        spinpair=sdata.mparams.spinpair, 
-        spatial=sdata.mparams.spatial, 
-        singleham=sdata.mparams.singleham,
+        perm_tol=sd.mparams.perm_tol, 
+        perm_maxdim=sd.mparams.perm_maxdim, 
+        ham_tol=sd.mparams.ham_tol, 
+        ham_maxdim=sd.mparams.ham_maxdim, 
+        singleham=sd.mparams.singleham,
+        denseify=denseify,
         verbose=verbose
     )
     
@@ -204,116 +226,50 @@ end
 
 
 function GenExcited!(
-        sdata::SubspaceProperties;
+        sd::SubspaceProperties;
         sweeps=nothing,
         weight=1.0,
         levs=nothing,
+        denseify=false,
         verbose=false
     )
     
     if levs==nothing
-        levs = collect(1:sdata.mparams.M)
+        levs = collect(1:sd.mparams.M)
     end
     
-    psi_list = []
-    ham_list = []
+    sd.psi_list = []
+    sd.ham_list = []
+    sd.tethers = []
     
-    for j=1:sdata.mparams.M
+    for j=1:sd.mparams.M
         
-        ords = [sdata.ord_list[j] for k=1:levs[j]]
+        ords = [sd.ord_list[j] for k=1:levs[j]]
         
         # Generate a set of states:
         psis, hams = GenStates(
-            sdata.chem_data, 
-            sdata.sites, 
+            sd.chem_data, 
+            sd.sites, 
             ords, 
             sweeps, 
             ovlp_opt=true,
             weight=weight,
-            perm_tol=sdata.mparams.perm_tol, 
-            perm_maxdim=sdata.mparams.perm_maxdim, 
-            ham_tol=sdata.mparams.ham_tol, 
-            ham_maxdim=sdata.mparams.ham_maxdim, 
-            spinpair=sdata.mparams.spinpair, 
-            spatial=sdata.mparams.spatial, 
-            singleham=sdata.mparams.singleham,
+            perm_tol=sd.mparams.perm_tol, 
+            perm_maxdim=sd.mparams.perm_maxdim, 
+            ham_tol=sd.mparams.ham_tol, 
+            ham_maxdim=sd.mparams.ham_maxdim, 
+            singleham=sd.mparams.singleham,
             verbose=verbose
         )
         
-        push!(psi_list, psis[end])
-        push!(ham_list, hams[1])
-        
-    end
-    
-    sdata.psi_list = psi_list
-    sdata.ham_list = ham_list
-    
-end
-
-
-function SchmidtRankTruncate!(
-        sdata::SubspaceProperties;
-        verbose=false
-    )
-    
-    M = sdata.mparams.M
-    
-    m_eff = 4*sdata.mparams.psi_maxdim
-    
-    # For each state, maximally entangle at each bond:
-    for j=1:M
-        
-        psi = sdata.psi_list[j]
-        
-        for s=1:2
-            
-            orthogonalize!(psi,1)
-        
-            for p=1:sdata.chem_data.N_spt-1
-
-                temp_tensor = (psi[p] * psi[p+1])
-                temp_inds = uniqueinds(psi[p], psi[p+1])
-
-                U,S,V = svd(temp_tensor, temp_inds, min_blockdim=m_eff, alg="recursive")
-
-                m_j = length(diag(Array(S.tensor)))
-
-                ids = inds(S)
-
-                sig = minimum([m_j, j])
-
-                for k=1:m_j
-
-                    """
-                    if k==1
-                        S[ids[1]=>k,ids[2]=>k] = 1.0
-                    else
-                        S[ids[1]=>k,ids[2]=>k] = 1.0
-                    end
-                    """
-
-                    S[ids[1]=>k,ids[2]=>k] = 1.0/sqrt(m_j)
-
-                end
-
-                temp_block = U*S*V
-
-                # Replace the tensors of the MPS:
-                spec = ITensors.replacebond!(
-                    psi,
-                    p,
-                    temp_block;
-                    #maxdim=sdata.mparams.psi_maxdim,
-                    min_blockdim=sdata.mparams.psi_maxdim,
-                    ortho="left",
-                    normalize=true,
-                    svd_alg="qr_iteration"
-                )
-
-            end
-
-            truncate!(sdata.psi_list[j], maxdim=sdata.mparams.psi_maxdim)
-            
+        if denseify
+            push!(sd.psi_list, dense(psis[end]))
+            push!(sd.ham_list, dense(hams[1]))
+            push!(sd.tethers, [dense(psis[j]) for j=1:length(psis)-1])
+        else
+            push!(sd.psi_list, psis[end])
+            push!(sd.ham_list, hams[1])
+            push!(sd.tethers, psis[1:end-1])
         end
         
     end
@@ -321,42 +277,23 @@ function SchmidtRankTruncate!(
 end
 
 
-function ApplyPhases!(mpo)
-    
-    #Apply phases:
-    phase_mat = [1 0 0 0; 
-                 0 1 0 0;
-                 0 0 1 0;
-                 0 0 0 -1]
-            
-    for p=1:length(mpo)
-
-        mpo_inds = siteinds(mpo)[p]
-        
-        phase_gate = ITensor(phase_mat, dag(mpo_inds[1]), dag(mpo_inds[2]))
-        setprime!(phase_gate, 2, plev=0)
-        
-        mpo[p] = mpo[p] * phase_gate
-        setprime!(mpo[p], 1, plev=2)
-        
-    end
-    
-end
 
 
 function GenPermOps!(
-        sdata::SubspaceProperties;
-        compute_alternates=true,
+        sd::SubspaceProperties;
+        no_rev=false,
+        tol=1.0e-16,
+        maxdim=2^16,
         verbose=false
     )
     
-    M = sdata.mparams.M
+    M = sd.mparams.M
     
-    # Construct identity MPOs:
-    #sdata.perm_ops = [[MPO(sdata.sites, "I") for j=1:M-i] for i=1:M]
-    sdata.perm_alt = [[[MPO(sdata.sites, "I") for j=1:M-i] for i=1:M] for pa=1:4]
-    
-    #sdata.perm_hams = [[sdata.ham_list[i] for j=1:M-i] for i=1:M]
+    if sd.perm_ops==[]
+        # Construct identity MPOs:
+        sd.perm_ops = [[MPO(sd.sites) for j=1:M-i] for i=1:M]
+        sd.rev_flag = [[false for j=1:M-i] for i=1:M]
+    end
     
     if verbose
         println("Generating permutation operators:")
@@ -369,47 +306,14 @@ function GenPermOps!(
     # ...permutation MPOs:
     for i=1:M, j=1:M-i
         
-        sdata.perm_alt[1][i][j] = PermuteMPO(
-            sdata.perm_alt[1][i][j],
-            sdata.sites,
-            sdata.ord_list[i],
-            sdata.ord_list[j+i],
-            tol=1e-16
+        sd.perm_ops[i][j], sd.rev_flag[i][j] = SlowPMPO(
+            sd.sites,
+            sd.ord_list[i],
+            sd.ord_list[j+i],
+            tol=tol,
+            no_rev=no_rev,
+            maxdim=maxdim
         )
-        
-        # Alternate (flipped) configurations:
-        if compute_alternates
-            
-            sdata.perm_alt[2][i][j] = PermuteMPO(
-                sdata.perm_alt[2][i][j],
-                sdata.sites,
-                sdata.ord_list[i],
-                reverse(sdata.ord_list[j+i]),
-                tol=1e-16
-            )
-
-            sdata.perm_alt[3][i][j] = ReverseMPO(sdata.perm_alt[2][i][j])
-
-            sdata.perm_alt[4][i][j] = ReverseMPO(sdata.perm_alt[1][i][j])
-            
-            # Apply phases:
-            #phase_mpo = MPO(sdata.sites, "CZ")
-
-            ApplyPhases!(sdata.perm_alt[3][i][j]) #sdata.perm_alt[3][i][j] = apply(sdata.perm_alt[3][i][j], phase_mpo)
-            ApplyPhases!(sdata.perm_alt[4][i][j]) #sdata.perm_alt[4][i][j] = apply(sdata.perm_alt[4][i][j], phase_mpo)
-
-            dag!(swapprime!(sdata.perm_alt[2][i][j],0,1))
-            dag!(swapprime!(sdata.perm_alt[4][i][j],0,1))
-
-            ApplyPhases!(sdata.perm_alt[2][i][j]) #sdata.perm_alt[2][i][j] = apply(sdata.perm_alt[2][i][j], phase_mpo)
-            ApplyPhases!(sdata.perm_alt[4][i][j]) #sdata.perm_alt[4][i][j] = apply(sdata.perm_alt[4][i][j], phase_mpo)
-
-            dag!(swapprime!(sdata.perm_alt[2][i][j],0,1))
-            dag!(swapprime!(sdata.perm_alt[4][i][j],0,1))
-        
-        end
-        
-        #sdata.perm_hams[i][j] = apply(sdata.perm_hams[i][j], sdata.perm_ops[i][j], cutoff=1e-12)
         
         c += 1
         
@@ -420,9 +324,6 @@ function GenPermOps!(
         
     end
     
-    # Set everything to non-flipped config:
-    sdata.perm_ops = [[deepcopy(sdata.perm_alt[1][i][j]) for j=1:M-i] for i=1:M]
-    
     if verbose
         println("\nDone!\n")
     end
@@ -430,215 +331,38 @@ function GenPermOps!(
 end
 
 
-function GenHams!(sdata)
-    
-    # Update the Hamiltonian MPOs:
-    for j=1:sdata.mparams.M
-        opsum = GenOpSum(sdata.chem_data, sdata.ord_list[j])
-        sdata.ham_list[j] = MPO(opsum, sdata.sites, cutoff=sdata.mparams.ham_tol, maxdim=sdata.mparams.ham_maxdim);
-        if sdata.rev_list[j]
-            sdata.ham_list[j] = ReverseMPO(sdata.ham_list[j])
-        end
-    end
-    
-end
-
-
-# Apply FSWAP tensors to modify the permutation operators for state k:
-# [May change later to include alternates]
-function UpdatePermOps!(
-        sdata::SubspaceProperties,
-        new_ord_list
-    )
-    
-    M = sdata.mparams.M
-    
-    # Update the permutation operators:
-    for i=1:M, j=1:M-i
-        
-        # Un-apply the phases:
-        ApplyPhases!(sdata.perm_alt[3][i][j])
-        ApplyPhases!(sdata.perm_alt[4][i][j])
-
-        dag!(swapprime!(sdata.perm_alt[2][i][j],0,1))
-        dag!(swapprime!(sdata.perm_alt[4][i][j],0,1))
-
-        ApplyPhases!(sdata.perm_alt[2][i][j])
-        ApplyPhases!(sdata.perm_alt[4][i][j])
-
-        dag!(swapprime!(sdata.perm_alt[2][i][j],0,1))
-        dag!(swapprime!(sdata.perm_alt[4][i][j],0,1))
-        
-        for f=1:4
-        
-            ords_i = [deepcopy(sdata.ord_list[i]), deepcopy(new_ord_list[i])]
-            ords_j = [deepcopy(sdata.ord_list[j+i]), deepcopy(new_ord_list[j+i])]
-
-            if f==2 || f==4
-                ords_j = [reverse(ords_j[k]) for k=1:2]
-            end
-            
-            if f==3 || f==4
-                ords_i = [reverse(ords_i[k]) for k=1:2]
-            end
-            
-            sdata.perm_alt[f][i][j] = PermuteMPO(
-                sdata.perm_alt[f][i][j],
-                sdata.sites,
-                ords_j[1],
-                ords_j[2],
-                tol=1e-16
-            )
-            
-            dag!(swapprime!(sdata.perm_alt[f][i][j], 0,1))
-            
-            sdata.perm_alt[f][i][j] = PermuteMPO(
-                sdata.perm_alt[f][i][j],
-                sdata.sites,
-                ords_i[1],
-                ords_i[2],
-                tol=1e-16
-            )
-
-            dag!(swapprime!(sdata.perm_alt[f][i][j], 0,1))
-            
-        end
-        
-        # Re-apply the phases:
-        ApplyPhases!(sdata.perm_alt[3][i][j])
-        ApplyPhases!(sdata.perm_alt[4][i][j])
-
-        dag!(swapprime!(sdata.perm_alt[2][i][j],0,1))
-        dag!(swapprime!(sdata.perm_alt[4][i][j],0,1))
-
-        ApplyPhases!(sdata.perm_alt[2][i][j])
-        ApplyPhases!(sdata.perm_alt[4][i][j])
-
-        dag!(swapprime!(sdata.perm_alt[2][i][j],0,1))
-        dag!(swapprime!(sdata.perm_alt[4][i][j],0,1))
-        
-        
-    end
-    
-    SelectPermOps!(sdata)
-    
-end
-
-
-function SelectPermOps!(
-        sdata::SubspaceProperties
-    )
-    
-    M = sdata.mparams.M
-    
-    phase_mpo = MPO(sdata.sites, "CZ")
-    
-    for i=1:M, j=1:M-i
-        
-        if !(sdata.rev_list[i]) && !(sdata.rev_list[j+i])
-            # Non-flipped config:
-            sdata.perm_ops[i][j] = deepcopy(sdata.perm_alt[1][i][j])
-            
-        elseif !(sdata.rev_list[i]) && sdata.rev_list[j+i]
-            # Right-flipped config:
-            sdata.perm_ops[i][j] = deepcopy(sdata.perm_alt[2][i][j])
-            
-            """
-            dag!(swapprime!(sdata.perm_ops[i][j],0,1))
-            sdata.perm_ops[i][j] = apply(sdata.perm_ops[i][j], phase_mpo)
-            dag!(swapprime!(sdata.perm_ops[i][j],0,1))
-            """
-            
-        elseif sdata.rev_list[i] && !(sdata.rev_list[j+i])
-            # Left-flipped config:
-            sdata.perm_ops[i][j] = deepcopy(sdata.perm_alt[3][i][j])
-            
-            """
-            sdata.perm_ops[i][j] = apply(sdata.perm_ops[i][j], phase_mpo)
-            """
-            
-        elseif sdata.rev_list[i] && sdata.rev_list[j+i]
-            # Double-flipped config:
-            sdata.perm_ops[i][j] = deepcopy(sdata.perm_alt[4][i][j])
-            
-            """
-            sdata.perm_ops[i][j] = apply(sdata.perm_ops[i][j], phase_mpo)
-            dag!(swapprime!(sdata.perm_ops[i][j],0,1))
-            sdata.perm_ops[i][j] = apply(sdata.perm_ops[i][j], phase_mpo)
-            dag!(swapprime!(sdata.perm_ops[i][j],0,1))
-            """
-            
-        end
-        
-    end
-    
-end
-
-
-function ReverseStates!(
-        sdata::SubspaceProperties,
-        j_list::Vector{Int};
-        verbose=false
-    )
-    
-    if verbose
-        println("Reversing states...")
-    end
-    
-    for j in j_list
-        sdata.psi_list[j] = ReverseMPS(sdata.psi_list[j])
-        sdata.ham_list[j] = ReverseMPO(sdata.ham_list[j])
-        sdata.rev_list[j] = !(sdata.rev_list[j])
-    end
-    
-    if verbose
-        println("Done!")
-    end
-
-    SelectPermOps!(sdata)
-    
-end
-
-
-function UnReverseStates!(
-        sdata::SubspaceProperties;
-        verbose=false
-    )
-    
-    for j=1:sdata.mparams.M
-        if sdata.rev_list[j]
-            sdata.psi_list[j] = ReverseMPS(sdata.psi_list[j])
-            sdata.rev_list[j]
-        end
-    end
-    
-    GenPermOps!(sdata, verbose=verbose)
-    
-end
-
-
 function GenSubspaceMats!(
-        sdata::SubspaceProperties;
+        sd::SubspaceProperties;
         verbose=false
     )
     
-    M = sdata.mparams.M
+    M = sd.mparams.M
     
     # Diagonal elements:
     for i=1:M
-        sdata.H_mat[i,i] = inner(sdata.psi_list[i]', sdata.ham_list[i], sdata.psi_list[i])
-        sdata.S_mat[i,i] = 1.0
+        sd.H_mat[i,i] = inner(sd.psi_list[i]', sd.ham_list[i], sd.psi_list[i])
+        sd.S_mat[i,i] = 1.0
     end
     
     # Off-diagonal elements:
     for i=1:M, j=i+1:M
         
-        sdata.H_mat[i,j] = inner(sdata.perm_ops[i][j-i], sdata.psi_list[j], sdata.ham_list[i], sdata.psi_list[i])
-        #sdata.H_mat[i,j] = inner(sdata.psi_list[i]', sdata.perm_hams[i][j-i], sdata.psi_list[j])
-        sdata.H_mat[j,i] = sdata.H_mat[i,j]
+        psi_i = deepcopy(sd.psi_list[i])
+        psi_j = deepcopy(sd.psi_list[j])
+        ham_i = deepcopy(sd.ham_list[i])
+        ham_j = deepcopy(sd.ham_list[j])
         
-        sdata.S_mat[i,j] = inner(sdata.psi_list[i]', sdata.perm_ops[i][j-i], sdata.psi_list[j])
-        sdata.S_mat[j,i] = sdata.S_mat[i,j]
+        if sd.rev_flag[i][j-i]
+            psi_j = ReverseMPS(sd.psi_list[j])
+            ham_j = ReverseMPO(sd.ham_list[j])
+        end
+        
+        pmpo_ij = sd.perm_ops[i][j-i]
+        
+        sd.H_mat[i,j] = inner(pmpo_ij, psi_j, ham_i, psi_i)
+        sd.S_mat[i,j] = inner(psi_i', pmpo_ij, psi_j)
+        sd.H_mat[j,i] = sd.H_mat[i,j]
+        sd.S_mat[j,i] = sd.S_mat[i,j]
         
     end
     
@@ -646,35 +370,35 @@ end
 
 
 function SolveGenEig!(
-        sdata::SubspaceProperties;
+        sd::SubspaceProperties;
         thresh=nothing,
         eps=nothing,
         verbose=false
     )
     
     if thresh==nothing
-        thresh=sdata.mparams.thresh
+        thresh=sd.mparams.thresh
     end
     
     if eps==nothing
-        eps=sdata.mparams.eps
+        eps=sd.mparams.eps
     end
     
-    sdata.E, sdata.C, sdata.kappa = SolveGenEig(
-        sdata.H_mat,
-        sdata.S_mat,
+    sd.E, sd.C, sd.kappa = SolveGenEig(
+        sd.H_mat,
+        sd.S_mat,
         thresh=thresh,
         eps=eps
     )
     
     if verbose
-        DisplayEvalData(sdata.chem_data, sdata.H_mat, sdata.E, sdata.C, sdata.kappa)
+        DisplayEvalData(sd.chem_data, sd.H_mat, sd.E, sd.C, sd.kappa)
     end
     
 end
     
     
-# The subspace "shadow" data structure:
+# The "subspace shadow" data structure:
 # Preserves all matrix elements between subspace basis states
 # without keeping MPS's etc.
 mutable struct SubspaceShadow
@@ -683,7 +407,6 @@ mutable struct SubspaceShadow
     thresh::String
     eps::Float64
     vec_list::Vector{Vector{Float64}}
-    X_list::Vector{Matrix{Float64}}
     H_full::Matrix{Float64}
     S_full::Matrix{Float64}
     H_mat::Matrix{Float64}
@@ -702,7 +425,6 @@ function copy(sh::SubspaceShadow)
         sh.thresh,
         sh.eps,
         deepcopy(sh.vec_list),
-        deepcopy(sh.X_list),
         deepcopy(sh.H_full),
         deepcopy(sh.S_full),
         deepcopy(sh.H_mat),
@@ -717,29 +439,23 @@ function copy(sh::SubspaceShadow)
 end
 
 
-function GenSubspaceMats!(shadow::SubspaceShadow)
+function GenSubspaceMats!(sh::SubspaceShadow)
     
-    M_gm = length(shadow.M_list)
+    M_gm = length(sh.M_list)
     
     for i=1:M_gm, j=i:M_gm
         
-        i0 = sum(shadow.M_list[1:i-1])+1
-        i1 = sum(shadow.M_list[1:i])
+        i0 = sum(sh.M_list[1:i-1])+1
+        i1 = sum(sh.M_list[1:i])
         
-        j0 = sum(shadow.M_list[1:j-1])+1
-        j1 = sum(shadow.M_list[1:j])
+        j0 = sum(sh.M_list[1:j-1])+1
+        j1 = sum(sh.M_list[1:j])
         
-        # For readability:
-        vec_list = shadow.vec_list
-        X_list = shadow.X_list
-        H_full = shadow.H_full
-        S_full = shadow.S_full
+        sh.H_mat[i,j] = transpose(sh.vec_list[i]) * sh.H_full[i0:i1,j0:j1] * sh.vec_list[j]
+        sh.H_mat[j,i] = sh.H_mat[i,j]
         
-        shadow.H_mat[i,j] = transpose(vec_list[i]) * H_full[i0:i1,j0:j1] * vec_list[j]
-        shadow.H_mat[j,i] = shadow.H_mat[i,j]
-        
-        shadow.S_mat[i,j] = transpose(vec_list[i]) * S_full[i0:i1,j0:j1] * vec_list[j]
-        shadow.S_mat[j,i] = shadow.S_mat[i,j]
+        sh.S_mat[i,j] = transpose(sh.vec_list[i]) * sh.S_full[i0:i1,j0:j1] * sh.vec_list[j]
+        sh.S_mat[j,i] = sh.S_mat[i,j]
         
     end
     
@@ -747,29 +463,29 @@ end
 
 
 function SolveGenEig!(
-        shadow::SubspaceShadow;
+        sh::SubspaceShadow;
         thresh=nothing,
         eps=nothing,
         verbose=false
     )
     
     if thresh==nothing
-        thresh=shadow.thresh
+        thresh=sh.thresh
     end
     
     if eps==nothing
-        eps=shadow.eps
+        eps=sh.eps
     end
     
-    shadow.E, shadow.C, shadow.kappa = SolveGenEig(
-        shadow.H_mat,
-        shadow.S_mat,
+    sh.E, sh.C, sh.kappa = SolveGenEig(
+        sh.H_mat,
+        sh.S_mat,
         thresh=thresh,
         eps=eps
     )
     
     if verbose
-        DisplayEvalData(shadow.chem_data, shadow.H_mat, shadow.E, shadow.C, shadow.kappa)
+        DisplayEvalData(sh.chem_data, sh.H_mat, sh.E, sh.C, sh.kappa)
     end
     
 end

@@ -88,29 +88,7 @@ end
 ##############################################################################
 
 
-function OnSiteSwap!(T, site; do_fswap=false)
-    
-    ids = vcat(site, uniqueinds(inds(T), site))
-    
-    #println("")
-    #display(ids)
-    #println("")
-    
-    TA = Array(T, ids)
-    
-    TA[2:3] = [TA[3],TA[2]]
-    
-    if do_fswap
-        TA[4] *= -1.0
-    end
-    
-    T=ITensor(TA,ids)
-    
-end
-
-
 # return a reversed copy of an MPS:
-
 function ReverseMPS(psi)
     
     N = length(psi)
@@ -129,9 +107,6 @@ function ReverseMPS(psi)
         Tq = deepcopy(psi[q])
         
         replaceind!(Tq, si_q, si_p)
-        
-        # Swap the on-site ordering:
-        OnSiteSwap!(Tq, si_p)
         
         psi2[p] = Tq
         
@@ -162,75 +137,10 @@ function ReverseMPO(mpo)
         replaceind!(Tq, si_q[1], si_p[1])
         replaceind!(Tq, si_q[2], si_p[2])
         
-        # Swap the on-site ordering:
-        OnSiteSwap!(Tq, si_p[1])
-        OnSiteSwap!(Tq, si_p[2])
-        
         mpo2[p] = Tq
         
     end
     
     return mpo2
-    
-end
-
-
-function ReverseMPS2(psi)
-    
-    maxdim = maxlinkdim(psi)
-    sites = siteinds(psi)
-    N = length(psi)
-    
-    psi = Permute(
-        psi,
-        sites,
-        collect(1:N),
-        reverse(collect(1:N))
-    )
-    
-    truncate!(psi, maxdim=maxdim)
-    normalize!(psi)
-    
-    return psi
-    
-end
-
-
-function ReverseMPO2(mpo, sites)
-    
-    maxdim = maxlinkdim(mpo)
-    sites = siteinds(mpo, plev=0)
-    N = length(mpo)
-    
-    #println(siteinds(mpo))
-    
-    dag!(mpo)
-    
-    mpo = PermuteMPO(
-        mpo,
-        sites,
-        collect(1:N),
-        reverse(collect(1:N)),
-        tol=1e-16
-    )
-    
-    dag!(mpo)
-    swapprime!(mpo, 0,1)
-    
-    #println(siteinds(mpo))
-    
-    mpo = PermuteMPO(
-        mpo,
-        sites,
-        collect(1:N),
-        reverse(collect(1:N)),
-        tol=1e-16
-    )
-    
-    swapprime!(mpo, 0,1)
-    
-    truncate!(mpo, maxdim=maxdim)
-    
-    return mpo
     
 end

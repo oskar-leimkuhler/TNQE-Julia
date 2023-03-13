@@ -12,17 +12,7 @@ ITensors.op(::OpName"CZ",::SiteType"Electron") = [1 0 0 0; 0 1 0 0; 0 0 1 0; 0 0
 
 
 # Generates index positions for a bubble/insertion sorting network to rearrange sites:
-function BubbleSort(ord1, ord2; spinpair=false)
-    
-    """
-    if spinpair==true
-        ord1c = deepcopy(Spatial2SpinOrd(ord1))
-        ord2c = deepcopy(Spatial2SpinOrd(ord2))
-    else
-        ord1c = deepcopy(ord1)
-        ord2c = deepcopy(ord2)
-    end
-    """
+function BubbleSort(ord1, ord2)
     
     N = size(ord1,1)
     
@@ -35,21 +25,6 @@ function BubbleSort(ord1, ord2; spinpair=false)
     
     swap_indices = []
     p_list = vcat(collect(1:N-1), collect(N-2:(-1):1))
-    
-    """
-    target_indices = [findall(x->x==i, ord2c)[1] for i=1:N]
-    
-    for p in p_list
-        for q=p:(-2):1
-            if target_indices[ord1c[q+1]] - target_indices[ord1c[q]] < 0
-                ord1cc = [ord1c[q], ord1c[q+1]]
-                ord1c[q] = ord1cc[2]
-                ord1c[q+1] = ord1cc[1]
-                push!(swap_indices, q)
-            end
-        end
-    end
-    """
     
     for p in p_list
         for q=p:(-2):1
@@ -65,7 +40,7 @@ function BubbleSort(ord1, ord2; spinpair=false)
 end
 
 
-# Builds theSWAP ITensor object between sites idx and idx+1:
+# Builds the SWAP ITensor object between sites idx and idx+1:
 function BuildSwap(sites, idx; dim=2)
     
     swap = [1 0 0 0;
@@ -159,12 +134,12 @@ end
 
 
 # Permutes the MPS according to the swap network indices provided:
-function Permute(passed_psi, sites, ord1, ord2; tol=1E-16, maxdim=5000, mindim=1, spinpair=false, locdim=4, verbose=false, alg="divide_and_conquer")
+function Permute(passed_psi, sites, ord1, ord2; tol=1E-16, maxdim=5000, mindim=1, locdim=4, verbose=false, alg="divide_and_conquer")
     
     # Copy psi:
     psi = deepcopy(passed_psi)
     
-    swap_indices = BubbleSort(ord1, ord2, spinpair=spinpair)
+    swap_indices = BubbleSort(ord1, ord2)
     
     if verbose==true
         println("Permuting state: ")
@@ -188,13 +163,15 @@ function Permute(passed_psi, sites, ord1, ord2; tol=1E-16, maxdim=5000, mindim=1
         println("Done!")
     end
     
+    normalize!(psi)
+    
     return psi
     
 end
 
 
 # Permutes an MPO according to the swap network indices provided:
-function PermuteMPO(passed_mpo, sites, ord1, ord2; do_fswap=true, tol=1e-16, maxdim=5000, mindim=0, spinpair=false, locdim=4)
+function PermuteMPO(passed_mpo, sites, ord1, ord2; do_fswap=true, tol=1e-16, maxdim=5000, mindim=0, locdim=4)
     
     # Copy MPO:
     mpo = deepcopy(passed_mpo)
@@ -202,7 +179,7 @@ function PermuteMPO(passed_mpo, sites, ord1, ord2; do_fswap=true, tol=1e-16, max
     # Prime one side of the MPO:
     setprime!(mpo, 2, plev=1)
     
-    swap_indices = BubbleSort(ord1, ord2, spinpair=spinpair)
+    swap_indices = BubbleSort(ord1, ord2)
     
     for idx in swap_indices
         
@@ -221,3 +198,178 @@ function PermuteMPO(passed_mpo, sites, ord1, ord2; do_fswap=true, tol=1e-16, max
     return mpo
     
 end
+
+
+function SlowPMPO(sites, ord1, ord2; do_fswap=true, no_rev=false, tol=1e-12, maxdim=2^16)
+    
+    # Generate an identity MPO:
+    mpo = MPO(sites, "I")
+    
+    # Get the swap indices:
+    swap_ind = BubbleSort(ord2, ord1)
+    swap_rev = BubbleSort(reverse(ord2), ord1)
+    
+    rev_flag=false
+    ords = [ord1, ord2]
+    if length(swap_rev) < length(swap_ind) && !no_rev
+        ords = [ord1, reverse(ord2)]
+        rev_flag = true
+    end 
+    
+    
+    mpo = PermuteMPO(
+        mpo, 
+        sites, 
+        ords[1],
+        ords[2],
+        tol=tol,
+        maxdim=maxdim
+    )
+    
+    if rev_flag && do_fswap
+        ApplyPhases!(mpo, sites)
+    end
+    
+    return mpo, rev_flag
+    
+end
+
+
+function SWAPComponents(do_fswap)
+    
+    I_4 = Matrix(1.0I, 4, 4)
+    I_2 = Matrix(1.0I, 2, 2)
+    
+    SWAP_4 = [
+        1 0 0 0;
+        0 0 1 0;
+        0 1 0 0;
+        0 0 0 1
+    ]
+    
+    if do_fswap
+        SWAP_4[4,4] = -1
+    end
+
+    SWAP_16 = kron(I_2,kron(SWAP_4,I_2))*kron(SWAP_4,SWAP_4)*kron(I_2,kron(SWAP_4,I_2))
+
+    SWAP_16 = reshape(permutedims(reshape(SWAP_16, (4,4,4,4)), (1,3,2,4)), (16,16))
+
+    F = svd(SWAP_16)
+
+    lU = reshape(F.U, 4,4,16)
+    rV = reshape(F.V, 16,4,4)
+
+    qnvec = [
+        QN(("Nf",0,-1),("Sz",0)) => 1,
+        QN(("Nf",1,-1),("Sz",1)) => 1,
+        QN(("Nf",1,-1),("Sz",-1)) => 1,
+        QN(("Nf",2,-1),("Sz",0)) => 1,
+        #---------------------------#
+        QN(("Nf",-1,-1),("Sz",-1)) => 1,
+        QN(("Nf",0,-1),("Sz",0)) => 1,
+        QN(("Nf",0,-1),("Sz",-2)) => 1,
+        QN(("Nf",1,-1),("Sz",-1)) => 1,
+        #---------------------------#
+        QN(("Nf",-1,-1),("Sz",1)) => 1,
+        QN(("Nf",0,-1),("Sz",2)) => 1,
+        QN(("Nf",0,-1),("Sz",0)) => 1,
+        QN(("Nf",1,-1),("Sz",1)) => 1,
+        #---------------------------#
+        QN(("Nf",-2,-1),("Sz",0)) => 1,
+        QN(("Nf",-1,-1),("Sz",1)) => 1,
+        QN(("Nf",-1,-1),("Sz",-1)) => 1,
+        QN(("Nf",0,-1),("Sz",0)) => 1
+    ]
+    
+    return lU, rV, qnvec
+    
+end
+
+
+# Applies reversal site-local phase tensors to an MPO:
+function ApplyPhases!(mpo, sites)
+    
+    N = length(mpo)
+    
+    #Apply phases:
+    phase_mat = [1 0 0 0; 
+                 0 1 0 0;
+                 0 0 1 0;
+                 0 0 0 -1]
+    
+    # Local phases:
+    for p=1:N
+
+        mpo_ind = sites[p]
+        #mpo_rev = sites[N-p+1]
+        
+        phase_gate = ITensor(phase_mat, setprime(dag(mpo_ind),2), setprime(mpo_ind,0))
+        
+        mpo[p] = mpo[p] * phase_gate
+        setprime!(mpo[p], 0, plev=2)
+        
+    end
+    
+    # Global phase:
+    mpo[1] *= -1.0
+    
+end
+
+
+function PSWAP!(mpo, p, lU, rV, qnvec; tol=1.0e-12, maxdim=2^16)
+    
+    psite = [siteinds(mpo, plev=0)[p][1], siteinds(mpo, plev=0)[p+1][1]]
+    
+    plink = commoninds(mpo[p], mpo[p+1])
+    nlink = Index(qnvec, tags="nlink")
+    
+    combo = combiner(plink, nlink, tags="link,l=$(p)")
+    
+    lswap = ITensor(lU, dag(setprime(psite[1],2)), setprime(psite[1],1), nlink)
+    rswap = ITensor(rV, dag(nlink), dag(setprime(psite[2],2)), setprime(psite[2],1))
+    
+    mpo[p] = mpo[p] * lswap * combo
+    mpo[p+1] = mpo[p+1] * rswap * dag(combo)
+    
+    setprime!(mpo[p], 1, plev=2)
+    setprime!(mpo[p+1], 1, plev=2)
+    
+    #truncate!(mpo, tol=tol, maxdim=maxdim)
+    
+end
+
+
+# Generates a permutation MPO for the orderings provided with a reversed-order flag:
+function FastPMPO(sites, ord1, ord2; do_fswap=true, no_rev=false, tol=1e-12, maxdim=2^16)
+    
+    lU, rV, qnvec = SWAPComponents(do_fswap)
+    
+    # Generate an identity MPO:
+    mpo = MPO(sites, "I")
+    
+    # Get the swap indices:
+    swap_ind = reverse(BubbleSort(ord1, ord2))
+    swap_rev = reverse(BubbleSort(ord1, reverse(ord2)))
+    
+    rev_flag=false
+    if length(swap_rev) < length(swap_ind) && !no_rev
+        swap_ind = swap_rev
+        rev_flag = true
+    end 
+    
+    for idx in swap_ind
+        PSWAP!(mpo, idx, lU, rV, qnvec, tol=tol, maxdim=maxdim)
+    end
+    
+    if rev_flag && do_fswap
+        ApplyPhases!(mpo, sites)
+    end
+    
+    truncate!(mpo, tol=tol, maxdim=maxdim)
+    
+    return mpo, rev_flag
+    
+end
+
+

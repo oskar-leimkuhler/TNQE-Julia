@@ -13,6 +13,7 @@ using GraphRecipes
 using BlackBoxOptim
 using Combinatorics
 using LinearAlgebra
+using Parameters
 
 # Importing the other submodules:
 include("./ChemData.jl")
@@ -28,11 +29,6 @@ include("./SubspaceRoutines.jl")
 include("./SubspaceData.jl")
 include("./Optimizer.jl")
 
-# Custom iTensor functions:
-include("./custom_itensor/projmpo_mps_c.jl")
-include("./custom_itensor/proj_costfunc.jl")
-include("./custom_itensor/dmrg_c.jl")
-
 # Import Python modules, including the RunPySCF subroutines in Python in order to use PySCF:
 py"""
 import sys
@@ -41,4 +37,9 @@ import configparser
 wd = os.getcwd()
 sys.path.append(wd+'/../subroutines/')
 import RunPySCF
+import platform
+print(platform.python_version())
 """
+
+FastTT = pyimport("FastTT")
+include("./FastTT.jl")
