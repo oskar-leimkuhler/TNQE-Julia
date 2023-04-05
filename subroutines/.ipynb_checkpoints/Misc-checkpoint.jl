@@ -70,13 +70,11 @@ function StepProb(E_0, E_1)
 end
 
 # Returns a polynomial acceptance probability:
-function PolyProb(e, e_new, temp; tpow=3, greedy=false)
+function PolyProb(e, e_new, temp; tpow=3)
     if e_new < e
         P=1.0
-    elseif greedy==false
-        P=temp^tpow
     else
-        P=0.0
+        P=temp^tpow
     end
     return P
 end
@@ -142,5 +140,27 @@ function ReverseMPO(mpo)
     end
     
     return mpo2
+    
+end
+
+
+# Count numerical nonzeros in a list of MPSs:
+function CountNonZeros(psi_list)
+    
+    counter = 0
+    
+    for psi in psi_list
+        
+        for p=1:length(psi)
+
+            T = Array(psi[p], inds(psi[p])) 
+
+            counter += count(x->(abs(x)>1e-13), T)
+
+        end
+        
+    end
+    
+    return counter
     
 end

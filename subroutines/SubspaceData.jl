@@ -38,6 +38,7 @@ mutable struct SubspaceProperties
     #rev_list::Vector{Bool}
     psi_list::Vector{MPS}
     ham_list::Vector{MPO}
+    slh_list::Vector{MPO}
     perm_ops::Vector{Vector{MPO}}
     rev_flag::Vector{Vector{Bool}}
     tethers::Vector{Vector{MPS}}
@@ -59,8 +60,8 @@ function GenSubspace(
         # MPS/MPO constructor parameters:
         psi_maxdim=8,
         psi_tol=1e-12,
-        ham_maxdim=512,
-        ham_tol=1e-12,
+        ham_maxdim=2^16,
+        ham_tol=1e-14,
         singleham=false,
         # Permutation parameters:
         perm_maxdim=512,
@@ -129,6 +130,7 @@ function GenSubspace(
         [],
         [],
         [],
+        [],
         #[],
         #[],
         zeros((mparams.M,mparams.M)),
@@ -154,6 +156,7 @@ function copy(sd::SubspaceProperties)
         #deepcopy(sd.rev_list),
         deepcopy(sd.psi_list),
         deepcopy(sd.ham_list),
+        deepcopy(sd.slh_list),
         deepcopy(sd.perm_ops),
         deepcopy(sd.rev_flag),
         deepcopy(sd.tethers),
@@ -176,9 +179,10 @@ function copyto!(sd1::SubspaceProperties, sd2::SubspaceProperties)
     sd1.ord_list = deepcopy(sd2.ord_list)
     sd1.psi_list = deepcopy(sd2.psi_list)
     sd1.ham_list = deepcopy(sd2.ham_list)
+    sd1.slh_list = deepcopy(sd2.slh_list)
     sd1.perm_ops = deepcopy(sd2.perm_ops)
     sd1.rev_flag = deepcopy(sd2.rev_flag)
-    sd1.tethers = deepcopy(sd2.tethers)
+    #sd1.tethers = deepcopy(sd2.tethers)
     sd1.H_mat = deepcopy(sd2.H_mat)
     sd1.S_mat = deepcopy(sd2.S_mat)
     sd1.E = deepcopy(sd2.E)
@@ -196,6 +200,7 @@ function GenStates!(
         prior_states=[],
         prior_ords=[],
         denseify=false,
+        randomize=false,
         verbose=false
     )
     
@@ -203,24 +208,54 @@ function GenStates!(
         sweeps = sd.dflt_sweeps
     end
     
-    # Generate a set of states:
-    sd.psi_list, sd.ham_list = GenStates(
-        sd.chem_data, 
-        sd.sites, 
-        sd.ord_list, 
-        sweeps, 
-        ovlp_opt=ovlp_opt,
-        weight=weight,
-        prior_states=prior_states,
-        prior_ords=prior_ords,
-        perm_tol=sd.mparams.perm_tol, 
-        perm_maxdim=sd.mparams.perm_maxdim, 
-        ham_tol=sd.mparams.ham_tol, 
-        ham_maxdim=sd.mparams.ham_maxdim, 
-        singleham=sd.mparams.singleham,
-        denseify=denseify,
-        verbose=verbose
-    )
+    if randomize
+        
+        if verbose
+            println("Generating states:")
+        end
+        
+        sd.psi_list = []
+        
+        # Generate random states:
+        for j=1:sd.mparams.M
+            hf_occ_j = [FillHF(sd.ord_list[j][p], sd.chem_data.N_el) for p=1:sd.chem_data.N_spt]
+            psi_j = randomMPS(sd.sites, hf_occ_j, linkdims=sd.mparams.psi_maxdim)
+            
+            push!(sd.psi_list, psi_j)
+            
+            if verbose
+                print("Progress: [",string(j),"/",string(sd.mparams.M),"] \r")
+                flush(stdout)
+            end
+            
+        end
+        
+        if verbose
+            println("\nDone!")
+        end
+        
+    else
+        
+        # Generate a set of states:
+        sd.psi_list, sd.ham_list = GenStates(
+            sd.chem_data, 
+            sd.sites, 
+            sd.ord_list, 
+            sweeps, 
+            ovlp_opt=ovlp_opt,
+            weight=weight,
+            prior_states=prior_states,
+            prior_ords=prior_ords,
+            perm_tol=sd.mparams.perm_tol, 
+            perm_maxdim=sd.mparams.perm_maxdim, 
+            ham_tol=sd.mparams.ham_tol, 
+            ham_maxdim=sd.mparams.ham_maxdim, 
+            singleham=sd.mparams.singleham,
+            denseify=denseify,
+            verbose=verbose
+        )
+        
+    end
     
 end
 
@@ -306,7 +341,7 @@ function GenPermOps!(
     # ...permutation MPOs:
     for i=1:M, j=1:M-i
         
-        sd.perm_ops[i][j], sd.rev_flag[i][j] = SlowPMPO(
+        sd.perm_ops[i][j], sd.rev_flag[i][j] = FastPMPO(
             sd.sites,
             sd.ord_list[i],
             sd.ord_list[j+i],
@@ -393,6 +428,112 @@ function SolveGenEig!(
     
     if verbose
         DisplayEvalData(sd.chem_data, sd.H_mat, sd.E, sd.C, sd.kappa)
+    end
+    
+end
+
+
+# Generate the Hamiltonian MPOs
+function GenHams!(
+        sd::SubspaceProperties
+    )
+    
+    sd.ham_list = []
+    
+    for j=1:sd.mparams.M
+        
+        opsum = GenOpSum(
+            sd.chem_data, 
+            sd.ord_list[j]
+        )
+
+        ham_j = MPO(
+            opsum, 
+            sd.sites, 
+            cutoff=sd.mparams.ham_tol, 
+            maxdim=sd.mparams.ham_maxdim
+        )
+        
+        push!(sd.ham_list, ham_j)
+        
+    end
+    
+    
+end
+
+
+# Generate a set of "localized" Hamiltonian MPOs \\
+# ... by suppression of the "long-range" coefficients
+function GenSLocHams!(
+        sd::SubspaceProperties;
+        sl_base=2.0
+    )
+    
+    sd.slh_list = []
+    
+    for j=1:sd.mparams.M
+        
+        opsum = GenOpSum(
+            sd.chem_data, 
+            sd.ord_list[j], 
+            sloc=true,
+            sl_base=sl_base
+        )
+
+        slh_j = MPO(
+            opsum, 
+            sd.sites, 
+            cutoff=sd.mparams.ham_tol, 
+            maxdim=sd.mparams.ham_maxdim
+        )
+        
+        push!(sd.slh_list, slh_j)
+        
+    end
+    
+    
+end
+
+
+# Generate "suppression-localized" MPS states:
+function GenSLocStates!(
+        sd::SubspaceProperties;
+        sweeps=nothing,
+        verbose=false
+        
+    )
+    
+    sd.psi_list = []
+    
+    if sweeps==nothing
+        sweeps = sd.dflt_sweeps
+    end
+    
+    if verbose
+        println("Generating states:")
+    end
+    
+    for j=1:sd.mparams.M
+        
+        psi_j, H_jj = RunDMRG(
+            sd.chem_data, 
+            sd.sites, 
+            sd.ord_list[j], 
+            sd.slh_list[j], 
+            sweeps
+        )
+        
+        push!(sd.psi_list, psi_j)
+        
+        if verbose
+            print("Progress: [",string(j),"/",string(sd.mparams.M),"] \r")
+            flush(stdout)
+        end
+        
+    end
+    
+    if verbose
+        println("\nDone!")
     end
     
 end

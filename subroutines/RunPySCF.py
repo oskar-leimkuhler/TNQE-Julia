@@ -21,6 +21,9 @@ def RunPySCF(config, gen_cubes=False):
     run_rohf = config['CALCULATION PARAMETERS'].getboolean('run_rohf', fallback=False)
     run_fci = config['CALCULATION PARAMETERS'].getboolean('run_fci', fallback=False)
     loc_orbs = config['CALCULATION PARAMETERS'].getboolean('loc_orbs', fallback=False)
+    active_space = config['CALCULATION PARAMETERS'].getboolean('active_space', fallback=False)
+    active_norb = config['CALCULATION PARAMETERS'].getint('active_norb', fallback=0)
+    active_nel = config['CALCULATION PARAMETERS'].getint('active_nel', fallback=0)
     xyz_file = config['GEOMETRIES']['xyz_file']
     
     geometries = ["../configs/xyz_files/"+xyz_file]
@@ -96,6 +99,9 @@ def RunPySCF(config, gen_cubes=False):
                 C[:,nocc:] = lo.pipek.PM(mol_obj).kernel(rhf_obj.mo_coeff[:,nocc:])
                 """
                 
+            #if active_space:
+                
+            
             h1e = mol_obj.intor("int1e_kin") + mol_obj.intor("int1e_nuc")
             h2e = mol_obj.intor("int2e")
             

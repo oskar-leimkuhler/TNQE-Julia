@@ -32,10 +32,12 @@ function OrbitalGraphPlot(graph_mat; multiplier=2, mult_mat=nothing)
         graph_mat .*= mult_mat
     end
     
+    N = size(graph_mat,1)
+    
     display(graphplot(graph_mat, 
         method=:circular,
         curves=false, 
-        names=[lpad(string(i), 2, '0') for i=1:chemical_data.N_spt], 
+        names=[lpad(string(i), 2, '0') for i=1:N], 
         edgewidth=multiplier*graph_mat, 
         nodesize=0.2, 
         fontsize=8, 

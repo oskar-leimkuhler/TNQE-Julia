@@ -300,3 +300,69 @@ function ExactInnerH(psi1, psi2, sites, chem_data, ord; tol=1E-12, spatial=true)
     return value
     
 end
+
+
+
+# Suppression localization factor:
+function SLocFactor(sl_base, ord, p_inds)
+    
+    xj_set = [findall(x->x==p, ord)[1] for p in p_inds]
+    
+    dj = abs(maximum(xj_set) - minimum(xj_set))
+    
+    sl_exp = maximum([0, dj-1])
+    
+    sl_f = 1.0/sl_base^sl_exp
+    
+    return sl_f
+    
+end
+
+
+# Generate the OpSum object from the Hamiltonian coefficients:
+function GenOpSum(chem_data, ord; sloc=false, sl_base=2.0, tol=1e-14)
+    
+    N_spt = chem_data.N_spt
+    h1e = chem_data.h1e
+    h2e = chem_data.h2e
+    
+    ampo = OpSum()
+
+    for p=1:N_spt, q=1:N_spt
+        
+        cf = h1e[ord[p],ord[q]]
+        
+        # Suppression-localization:
+        if sloc
+            cf *= SLocFactor(sl_base, ord, [p,q])
+        end
+
+        if abs(cf) >= tol
+            ampo += cf,"c†↑",p,"c↑",q
+            ampo += cf,"c†↓",p,"c↓",q
+        end
+        
+    end
+
+    for p=1:N_spt, q=1:N_spt, r=1:N_spt, s=1:N_spt
+        
+        cf = 0.5*h2e[ord[p],ord[q],ord[r],ord[s]]
+        
+        # Suppression-localization:
+        if sloc
+            cf *= SLocFactor(sl_base, ord, [p,q,r,s])
+        end
+        
+        if abs(cf) >= tol
+            ampo += cf,"c†↑",p,"c†↓",r,"c↓",s,"c↑",q
+            ampo += cf,"c†↓",p,"c†↑",r,"c↑",s,"c↓",q
+            if p!=r && s!=q
+                ampo += cf,"c†↓",p,"c†↓",r,"c↓",s,"c↓",q
+                ampo += cf,"c†↑",p,"c†↑",r,"c↑",s,"c↑",q
+            end
+        end
+    end
+    
+    return ampo
+
+end

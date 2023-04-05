@@ -46,7 +46,7 @@ end
 
 
 # Generate the OpSum object from the Hamiltonian coefficients:
-function GenOpSum(chem_data, ord; tol=1E-12)
+function GenOpSum(chem_data, ord; tol=1e-14)
     
     N_spt = chem_data.N_spt
     h1e = chem_data.h1e
@@ -226,3 +226,6 @@ function ClosedShellEHF(chemical_data)
     return e_hf
     
 end
+
+
+

@@ -1,94 +1,6 @@
 # Functions to find MPS geometries:
 
 
-# Information distance measure for a given site ordering:
-function InfDist(ord, Ipq; eta=-2)
-    
-    N_sites = size(ord, 1)
-    
-    # Index of each site:
-    inds = [findall(x->x==i, ord)[1] for i=1:N_sites]
-    
-    inf_dist = 0.0
-    
-    for p=1:N_sites
-        for q=p+1:N_sites
-            inf_dist += sign(eta)*Ipq[p,q]*(float(abs(inds[p]-inds[q]))^eta)
-        end
-    end
-    
-    return inf_dist
-    
-end
-
-
-# Runs a simulated annealing heuristic to find an approximately optimal geometry:
-function InfDistAnnealing(
-        Ipq_in; 
-        M=1, 
-        eta=-2, 
-        constrained_edges=[], 
-        weight=1.0, 
-        swap_mult=3.0, 
-        steps=1e4, 
-        tpow=5, 
-        return_inf=false, 
-        greedy=false
-    )
-    
-    N_sites = size(Ipq_in, 1)
-    
-    Ipq = deepcopy(Ipq_in)
-    
-    for edge in constrained_edges
-        Ipq[edge[1],edge[2]] = weight
-        Ipq[edge[2],edge[1]] = weight
-    end
-    
-    temp = 1.0
-    temp_step = temp/steps
-    
-    ord = randperm(N_sites)
-    e = InfDist(ord, Ipq, eta=eta)
-    
-    for s=1:steps
-        
-            
-        # Number of applied swaps to generate a new ordering \\
-        # ... (sampled from an exponential distribution):
-        num_swaps = Int(ceil(swap_mult*randexp()[1]))
-
-        ord_c = deepcopy(ord)
-
-        # Apply these swaps randomly:
-        for swap=1:num_swaps
-            swap_ind = rand(1:N_sites-1)
-            ord_c[swap_ind:swap_ind+1]=reverse(ord_c[swap_ind:swap_ind+1])
-        end
-
-        e = InfDist(ord_c, Ipq, eta=eta)
-
-        swap_prob = PolyProb(e, e_new, temp, tpow=tpow, greedy=greedy)
-
-        if rand()[1] <= swap_prob
-            ord = ord_c
-            e = e_new
-        end
-        
-        temp -= temp_step
-        
-    end
-    
-    if return_inf
-        return ord, e
-    else
-        return ord
-    end
-        
-    
-end
-
-
 # Parameters for the geometry heuristic algorithms:
 @with_kw mutable struct GeomParameters 
     
@@ -97,10 +9,11 @@ end
     g_maxiter::Int=40 # Genetic alg. iterations
     
     # Annealing parameters:
+    afunc::String="stun" # "exp", "stun", "step", or "poly"
     a_alpha::Float64=1e-1 # Sharpness of cutoff
-    stun::Bool=true # Use stochastic tunnelling?
     a_gamma::Float64=1e2 # Stun parameter
     swap_mult::Float64=3.0 # "Swappiness" (i.e. step size)
+    a_tpow::Float64=5.0 # For the polyprob function
     
     # Optimize the state vector?
     opt_statevec::Bool=false # Optimize Y/N
@@ -121,10 +34,150 @@ end
     wt::Float64=0.9 # Composite weight (ground vs. excited states)
     baseline=[0.1,0.5] # Composite baseline parameters \\
     # ... [multi-geom-ground, single-geom-excited]
+        
+    # Information-distance parameters:
+    cweight::Float64=1.0 # Constrained edge weight
+    eta::Int=-2 # "eta" parameter in information distance function
+    shrp::Float64=3.0 # Sharpness of "softmax" function
     
     # Miscellaneous:
     anchor::Int=0 # Exclude some of the states?
     return_all::Bool=false # Return the full population?
+    
+end
+
+
+function softmax(alpha, x)
+    
+    xmax = maximum(x)
+    
+    if minimum(x) <= 0
+        println("Error: xmin <= 0")
+        return nothing
+    end
+    
+    exptot = 0.0
+    
+    for j=1:length(x)
+        exptot += exp(alpha*x[j]/xmax)
+    end
+    
+    return xmax/alpha*log(exptot)
+    
+end
+
+
+# Information distance measure for a given site ordering:
+function InfDist(ord_list, Ipq; eta=-2, shrp=3.0)
+    
+    M = length(ord_list)
+    N = length(ord_list[1])
+    
+    
+    inds = []
+    for ord in ord_list
+        # Index of each site:
+        push!(inds, [findall(x->x==p, ord)[1] for p=1:N])
+    end
+    
+    inf_dist = 0.0
+    
+    for p=1:N
+        for q=p+1:N
+            
+            nu_pq = [float(abs(inds[j][p]-inds[j][q]))^eta for j=1:M]
+            
+            inf_dist += sign(eta)*Ipq[p,q]*softmax(shrp, nu_pq)
+            
+        end
+    end
+    
+    return inf_dist
+    
+end
+
+
+# Runs a simulated annealing heuristic to find an approximately optimal geometry:
+function InfDistAnnealing(
+        Ipq_in,
+        M,
+        gp; 
+        constrained_edges=[], 
+        return_inf=false,
+        verbose=false
+    )
+    
+    N_sites = size(Ipq_in, 1)
+    
+    Ipq = deepcopy(Ipq_in)
+    
+    for edge in constrained_edges
+        Ipq[edge[1],edge[2]] = gp.cweight
+        Ipq[edge[2],edge[1]] = gp.cweight
+    end
+    
+    ord_list = [randperm(N_sites) for j=1:M]
+    e = InfDist(ord_list, Ipq, eta=gp.eta, shrp=gp.shrp)
+    e_best = e
+    
+    for s=1:gp.a_maxiter
+        
+        ord_list_c = deepcopy(ord_list)
+        
+        for ord in ord_list_c
+            # Number of applied swaps to generate a new ordering \\
+            # ... (sampled from an exponential distribution):
+            num_swaps = Int(ceil(gp.swap_mult*randexp()[1]))
+
+            # Apply these swaps randomly:
+            for swap=1:num_swaps
+                swap_ind = rand(1:N_sites-1)
+                ord[swap_ind:swap_ind+1]=reverse(ord[swap_ind:swap_ind+1])
+            end
+        end
+
+        e_new = InfDist(ord_list_c, Ipq, eta=gp.eta, shrp=gp.shrp)
+        
+        temp = 1.0 - s/gp.a_maxiter
+        beta = gp.a_alpha/temp
+        
+        if gp.afunc=="step"
+            P = StepProb(e, e_new)
+        elseif gp.afunc=="exp"
+            P = ExpProb(e, e_new, beta)
+        elseif gp.afunc=="stun"
+            f0 = Fstun(e_best, e, gp.a_gamma)
+            f1 = Fstun(e_best, e_new, gp.a_gamma)
+            P = ExpProb(f1, f0, beta)
+        elseif gp.afunc=="poly"
+            P = PolyProb(e, e_new, temp, tpow=gp.tpow)
+        else
+            println("Invalid probability function!")
+            return nothing
+        end
+        
+        if e_new < e_best
+            e_best = e_new
+        end
+
+        if rand()[1] <= P
+            ord_list = ord_list_c
+            e = e_new
+        end
+        
+        if verbose && (div(s,100)>div((s-1),100))
+            print("$(e)    \r")
+            flush(stdout)
+        end
+        
+    end
+    
+    if return_inf
+        return ord_list, e
+    else
+        return ord_list
+    end
+        
     
 end
 
@@ -293,13 +346,14 @@ function BipartiteEntanglement(
         locdim=locdim
     )
     
+    truncate!(perm_psi, tol=1e-6)
     orthogonalize!(perm_psi,cut)
     
     temp_tensor = (perm_psi[cut] * perm_psi[cut+1])
     
     temp_inds = uniqueinds(perm_psi[cut],perm_psi[cut+1])
     
-    U,S,V = svd(temp_tensor,temp_inds,cutoff=tol,maxdim=maxdim)
+    U,S,V = svd(temp_tensor,temp_inds,cutoff=tol,maxdim=maxdim, alg="qr_iteration")
     
     sigma = Array(S.tensor)
     
@@ -310,22 +364,95 @@ function BipartiteEntanglement(
 end
 
 
+function ChainMaxEls(A)
+    
+    min_el = minimum(A)
+    
+    max_vals, max_inds = findmax(A, dims=1)
+    max_val, i = findmax(max_vals)
+    p, q = Tuple(max_inds[i])
+    
+    # Set the rows p, q to be lower than the minimum element:
+    A[p,:] .= min_el - 1.0
+    A[q,:] .= min_el - 1.0
+    
+    tot = max_val
+    
+    for step = 1:size(A,1)-2
+        # Look down the columns to find the maximal row index:
+        max1, r1 = findmax(A[:,p])
+        max2, r2 = findmax(A[:,q])
+        
+        if max1 > max2
+            p = r1
+            A[p,:] .= min_el - 1.0
+            tot += max1
+        else
+            q = r2
+            A[q,:] .= min_el - 1.0
+            tot += max2
+        end
+        
+    end
+    
+    
+    return tot
+    
+end
+
+
+# A "first-order" estimate of the block-entropy from \\
+# (...) single-site entropies and two-site QMI:
+function QMIBlockEntropy(partition, S_1, I_2)
+    
+    A_sites = partition[1]
+    A_vol = length(A_sites)
+    
+    S_est = 0.0
+    
+    for p in A_sites
+        S_est += S_1[p]
+    end
+    
+    I_2A = zeros((A_vol, A_vol))
+    for p=1:A_vol, q=1:A_vol
+        I_2A[p,q] = I_2[A_sites[p], A_sites[q]]
+    end
+    
+    # "Chain" the mutual information:
+    I_sum = ChainMaxEls(I_2A)
+    
+    S_est -= I_sum
+    
+    return S_est
+    
+end
+
+
 # Computes the entanglements over bipartitions
 # of a (single-state) DMRG subspace
 function ComputeBipartites(
         dmrg_subspace; 
-        state=1, 
-        cuts=10, 
-        ns=2, 
+        state=1,  
         verbose=false
     )
     
-    mpm = dmrg_subspace.mparams
-    cdata = dmrg_subspace.chem_data
+    if verbose
+        println("Computing QMI...")
+    end
     
-    biparts1 = SingleSiteBipartitions(cdata.N_spt)
-    biparts2 = TwoSiteBipartitions(cdata.N_spt)
-    biparts3 = ThreeSiteBipartitions(cdata.N_spt)
+    S1, S2, Ipq = MutualInformation(
+        dmrg_subspace.psi_list[state], 
+        dmrg_subspace.chem_data
+    )
+    
+    if verbose
+        println("Done!\n")
+    end
+    
+    biparts1 = SingleSiteBipartitions(dmrg_subspace.chem_data.N_spt)
+    biparts2 = TwoSiteBipartitions(dmrg_subspace.chem_data.N_spt)
+    biparts3 = ThreeSiteBipartitions(dmrg_subspace.chem_data.N_spt)
     
     bipartitions = reduce(vcat, [biparts1, biparts2, biparts3])
     
@@ -333,7 +460,14 @@ function ComputeBipartites(
     
     entropies = []
     for l=1:cuts
-        push!(entropies, BipartiteEntanglement(bipartitions[l], dmrg_subspace.psi_list[state], dmrg_subspace.ord_list[state]))
+        
+        #push!(entropies, BipartiteEntanglement(bipartitions[l], dmrg_subspace.psi_list[state], dmrg_subspace.ord_list[state]))
+        
+        #push!(entropies, QMIBlockEntropy(bipartitions[l], S1, Ipq))
+
+        rdm_l = kRDM(dmrg_subspace.psi_list[state], bipartitions[l][1])
+        push!(entropies, vnEntropy(rdm_l))
+        
     end
     
     return bipartitions, entropies
@@ -371,6 +505,8 @@ function BipartiteFitness(
         
         A_sites, B_sites = bipartitions[l]
         
+        N_AB = [length(A_sites), length(B_sites)]
+        
         # The "power" list (constants k_AB[j])
         k_AB = []
         
@@ -396,7 +532,6 @@ function BipartiteFitness(
             swap_network2 = BubbleSort(ord_list[j], ord_sort2)
             
             swap_networks = [swap_network1, swap_network2]
-            N_AB = [length(ord_inA), length(ord_inB)]
             
             # The "partition power" list:
             ppow_list = []
@@ -432,10 +567,13 @@ function BipartiteFitness(
             S_max += cj2*( ln4*k_AB[j] + lnm - log(cj2) )
         end
         
+        #S_max = minimum([S_max, ln4*minimum(N_AB)])
+        
         S_est = entropies[l]
         
         # The cost function calculation:
         fitness += maximum([0, S_est - zeta*S_max])
+        #fitness += S_est*(1.0 - S_max/(ln4*minimum(N_AB)))
         
     end
     

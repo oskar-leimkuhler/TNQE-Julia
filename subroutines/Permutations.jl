@@ -288,7 +288,7 @@ end
 
 
 # Applies reversal site-local phase tensors to an MPO:
-function ApplyPhases!(mpo, sites)
+function ApplyPhases!(mpo::MPO, sites)
     
     N = length(mpo)
     
@@ -313,6 +313,35 @@ function ApplyPhases!(mpo, sites)
     
     # Global phase:
     mpo[1] *= -1.0
+    
+end
+
+
+# Applies reversal site-local phase tensors to an MPS:
+function ApplyPhases!(psi::MPS)
+    
+    N = length(psi)
+    
+    sites = siteinds(psi)
+    
+    #Apply phases:
+    phase_mat = [1 0 0 0; 
+                 0 1 0 0;
+                 0 0 1 0;
+                 0 0 0 -1]
+    
+    # Local phases:
+    for p=1:N
+        
+        phase_gate = ITensor(phase_mat, setprime(sites[p],1), dag(sites[p]))
+        
+        psi[p] = psi[p] * phase_gate
+        noprime!(psi[p])
+        
+    end
+    
+    # Global phase:
+    psi[1] *= -1.0
     
 end
 
