@@ -29,15 +29,22 @@
     noise::Vector{Float64}=[1e-5] # Size of DMRG noise term at each iter
     delta::Vector{Float64}=[1e-3] # Size of Gaussian noise term
     theta::Float64=0.0 # Weight of the old state in the superposition 
-    ttol::Float64=0.1 # Fidelity tolerance for truncated site tensors
+    ttol::Float64=0.1 # Norm tolerance for truncated site tensors
     
     # Generalized eigenvalue solver parameters:
     thresh::String="inversion" # "none", "projection", or "inversion"
     eps::Float64=1e-8 # Singular value cutoff
     
     # Site decomposition solver parameters:
+    sd_method::String="geneig" # "annealing", "bboptim", or "geneig"
+    sd_maxiter::Int=2000 # Number of iterations
+    sd_stun::Bool=true # Use stochastic tunnelling?
+    sd_alpha::Float64=1e-4 # Sharpness for "exp" and "stun" functions
+    sd_delta::Float64=1e-3 # Step size
+    sd_gamma::Float64=1e3 # Additional parameter for "stun" function
     sd_thresh::String="inversion" # "none", "projection", or "inversion"
     sd_eps::Float64=1e-8 # Singular value cutoff
+    sd_penalty::Float64=1.0 # Penalty factor for truncation error
     
 end
 
@@ -335,6 +342,267 @@ function RelativePermOps(sdata, j)
 end
 
 
+function TruncError(c_j, j, p, psi_decomp, sd)
+    
+    T = sum([c_j[k]*psi_decomp[j][k] for k=1:length(c_j)])
+    
+    linds = commoninds(T, sd.psi_list[j][p])
+    
+    U,S,V = svd(T, linds, maxdim=sd.mparams.psi_maxdim)
+    
+    return norm(U*S*V - T)
+    
+end
+
+
+function BBCostFunc(
+        c::Vector{Float64}, 
+        j_list,
+        p,
+        psi_decomp,
+        shadow_in::SubspaceShadow, 
+        sd::SubspaceProperties,
+        op::OptimParameters;
+        verbose=false
+    )
+    
+    shadow = copy(shadow_in)
+    
+    j0 = 1
+    j1 = 0
+    
+    t_err = 0.0
+    
+    for j in j_list
+        
+        j1 += shadow.M_list[j]
+        
+        c_j = normalize(c[j0:j1])
+        
+        T = sum([c_j[k]*psi_decomp[j][k] for k=1:shadow.M_list[j]])
+        
+        linds = commoninds(T, sd.psi_list[j][p])
+        
+        U,S,V = svd(T, linds, maxdim=sd.mparams.psi_maxdim)
+        
+        T_trunc = U*S*V
+        
+        t_j = normalize([scalar(dag(psi_decomp[j][k])*T_trunc) for k=1:shadow.M_list[j]])
+        
+        shadow.vec_list[j] = t_j
+        
+        j0 = j1+1
+        
+    end
+    
+    GenSubspaceMats!(shadow)
+    
+    SolveGenEig!(shadow, thresh=op.sd_thresh, eps=op.sd_eps)
+    
+    return shadow.E[1]
+    
+end
+
+
+function MultiGeomBB(
+        H_full,
+        S_full,
+        j_list,
+        p,
+        psi_decomp,
+        sd::SubspaceProperties,
+        op::OptimParameters
+    )
+    
+    M_list = [length(psid) for psid in psi_decomp]
+    M = length(M_list)
+    M_tot = sum(M_list)
+            
+    shadow = SubspaceShadow(
+        sd.chem_data,
+        M_list,
+        op.sd_thresh,
+        op.sd_eps,
+        [zeros(M_list[j]) for j=1:M],
+        H_full,
+        S_full,
+        zeros((M,M)),
+        zeros((M,M)),
+        zeros(M),
+        zeros((M,M)),
+        0.0
+    )
+    
+    E, C, kappa = SolveGenEig(
+        shadow.H_full, 
+        shadow.S_full, 
+        thresh=op.sd_thresh, 
+        eps=op.sd_eps
+    )
+    
+    c0 = Float64[]
+    
+    # Fill in the initial vec list:
+    for j=1:length(shadow.M_list)
+        
+        j0 = sum(shadow.M_list[1:j-1])+1
+        j1 = sum(shadow.M_list[1:j])
+        
+        shadow.vec_list[j] = normalize(C[j0:j1,1])
+        
+        if j in j_list
+            #T_0 = sd.psi_list[j][p] * sd.psi_list[j][p+1]
+            #shadow.vec_list[j] = normalize([scalar(dag(psi_decomp[j][k])*T_0) for k=1:M_list[j]])
+            c0 = vcat(c0, shadow.vec_list[j])
+        #else
+            #shadow.vec_list[j] = [1.0]
+        end
+        
+    end
+    
+    GenSubspaceMats!(shadow)
+    SolveGenEig!(shadow)
+            
+    f(c) = BBCostFunc(
+        c, 
+        j_list,
+        p,
+        psi_decomp,
+        shadow,
+        sd,
+        op
+    )
+
+    res = bboptimize(
+        f, 
+        c0; 
+        NumDimensions=length(c0), 
+        SearchRange = (-1.0, 1.0), 
+        MaxFuncEvals=op.sd_maxiter, 
+        TraceMode=:silent
+    )
+
+    c_opt = best_candidate(res)
+    e_opt = best_fitness(res)
+    
+    """
+    BBCostFunc(
+        c_opt, 
+        j_list,
+        p,
+        psi_decomp,
+        shadow,
+        sd,
+        op,
+        verbose=true
+    )
+    """
+    
+    j0 = 1
+    j1 = 0
+    
+    # Replace the vectors:
+    for j in j_list
+
+        j1 += shadow.M_list[j]
+
+        c_j = normalize(c_opt[j0:j1])
+        
+        T = sum([c_j[k]*psi_decomp[j][k] for k=1:shadow.M_list[j]])
+        
+        linds = commoninds(T, sd.psi_list[j][p])
+        
+        U,S,V = svd(T, linds, maxdim=sd.mparams.psi_maxdim)
+        
+        T_trunc = U*S*V
+        
+        t_j = normalize([scalar(dag(psi_decomp[j][k])*T_trunc) for k=1:shadow.M_list[j]])
+        
+        shadow.vec_list[j] = t_j
+
+        j0 = j1+1
+
+    end
+
+    GenSubspaceMats!(shadow)
+    SolveGenEig!(shadow)
+    
+    return shadow
+    
+end
+
+
+function MultiGeomAnneal!(
+        shadow::SubspaceShadow,  
+        op::OptimParameters
+    )
+    
+    M_tot = sum(shadow.M_list)
+
+    c0 = zeros(M_tot)
+
+    for j=1:length(shadow.M_list)
+        j0 = sum(shadow.M_list[1:j-1])+1
+        j1 = sum(shadow.M_list[1:j])
+        c0[j0:j1] = shadow.vec_list[j]
+    end
+    
+    E_best = shadow.E[1]
+            
+    for l=1:maxiter
+
+        sh2 = copy(shadow)
+
+        # Update all states
+        for j=1:length(sh2.M_list)
+            j0 = sum(sh2.M_list[1:j-1])+1
+            j1 = sum(sh2.M_list[1:j])
+
+            c_j = sh2.vec_list[j] + delta*randn(sh2.M_list[j])#/sqrt(l)
+            sh2.vec_list[j] = c_j/sqrt(transpose(c_j)*sh2.S_full[j0:j1,j0:j1]*c_j)
+        end
+
+        # re-compute matrix elements and diagonalize
+        GenSubspaceMats!(sh2)
+        SolveGenEig!(sh2)
+        
+        E_old = shadow.E[1]
+        E_new = sh2.E[1]
+
+        # Accept move with some probability
+        beta = alpha*l#^4
+
+        if stun
+            F_0 = Fstun(E_best, E_old, gamma)
+            F_1 = Fstun(E_best, E_new, gamma)
+            P = ExpProb(F_1, F_0, beta)
+        else
+            P = ExpProb(E_old, E_new, beta)
+        end
+
+        if E_new < E_best
+            E_best = E_new
+        end
+
+        if rand(Float64) < P
+            
+            # Replace the vectors:
+            for j=1:length(shadow.M_list)
+                shadow.vec_list[j] = sh2.vec_list[j]
+            end
+
+            GenSubspaceMats!(shadow)
+
+            SolveGenEig!(shadow)
+
+        end
+        
+    end
+    
+end
+
+
+
 function GeneralizedTwoSite!(
         sdata::SubspaceProperties,
         op::OptimParameters;
@@ -458,44 +726,63 @@ function GeneralizedTwoSite!(
                     M_list = [length(psi_decomp[i]) for i=1:M]
                     M_j = length(psi_decomp[j])
                     
-                    # Solve the generalized eigenvalue problem:
-                    E, C, kappa = SolveGenEig(
-                        H_full, 
-                        S_full, 
-                        thresh=op.sd_thresh,
-                        eps=op.sd_eps
-                    )
+                    do_replace = true
                     
-                    #println(E[1])
-                    debug_old_H_mat = deepcopy(sdata.H_mat)
-                    debug_old_S_mat = deepcopy(sdata.S_mat)
+                    if op.sd_method=="geneig"
                     
-                    t_vec = deepcopy(real.(C[j:(j+M_j-1),1]))
-                    replace!(t_vec, NaN=>0.0)
-                    replace!(t_vec, Inf=>0.0)
-                    normalize!(t_vec)
-                    t_vec += ldelta*normalize(randn(M_j)) # Random noise term
-                    normalize!(t_vec)
-                    
-                    # Construct the new tensor and plug it in:
-                    T_new = sum([t_vec[k]*psi_decomp[j][k] for k=1:M_j])
-                    
-                    # Mix the new tensor with the old tensor:
-                    T_old = sdata.psi_list[j][p]*sdata.psi_list[j][p+1]
-                    #sf = sqrt(scalar(T_old*dag(T_old)))
-                    T_new = (1.0-op.theta)*T_new + op.theta*T_old
-                    T_new *= 1.0/sqrt(scalar(T_new*dag(T_new)))#*sf
+                        # Solve the generalized eigenvalue problem:
+                        E, C, kappa = SolveGenEig(
+                            H_full, 
+                            S_full, 
+                            thresh=op.sd_thresh,
+                            eps=op.sd_eps
+                        )
+
+                        t_vec = deepcopy(real.(C[j:(j+M_j-1),1]))
+                        normalize!(t_vec)
+                        
+                        if (NaN in t_vec) || (Inf in t_vec)
+                            do_replace = false
+                        end
+                        
+                    elseif op.sd_method=="bboptim"
+                        
+                        shadow = MultiGeomBB(
+                            H_full,
+                            S_full,
+                            [j],
+                            p,
+                            psi_decomp,
+                            sdata,
+                            op
+                        )
+                        
+                        t_vec = shadow.vec_list[j]
+                        
+                        if shadow.E[1] >= op.sd_penalty*sdata.E[1]
+                            do_replace = false
+                        end
+                        
+                    end
                     
                     # Check the truncation error is not too large:
-                    uinds = commoninds(T_new, sdata.psi_list[j][p])
-                    U,S,V = svd(
-                        T_new, 
-                        uinds, 
-                        maxdim=sdata.mparams.psi_maxdim, 
-                        svd_alg="qr_iteration"
-                    )
-                    
-                    if norm(U*S*V-T_new) < op.ttol
+                    if TruncError(t_vec, j, p, psi_decomp, sdata) > op.ttol    
+                        do_replace = false
+                    end
+                        
+                    # Replace the tensors of the MPS:
+                    if do_replace
+                        
+                        t_vec += ldelta*normalize(randn(M_j)) # Random noise term
+                        normalize!(t_vec)
+                        
+                        # Construct the new tensor and plug it in:
+                        T_new = sum([t_vec[k]*psi_decomp[j][k] for k=1:M_j])
+
+                        # Mix the new tensor with the old tensor:
+                        T_old = sdata.psi_list[j][p]*sdata.psi_list[j][p+1]
+                        T_new = (1.0-op.theta)*T_new + op.theta*T_old
+                        T_new *= 1.0/sqrt(scalar(T_new*dag(T_new)))
                         
                          # Generate the "noise" term:
                         pmpo = ITensors.ProjMPO(sdata.ham_list[j])
@@ -503,7 +790,6 @@ function GeneralizedTwoSite!(
                         ITensors.position!(pmpo, sdata.psi_list[j], p)
                         drho = lnoise*ITensors.noiseterm(pmpo,T_new,"left")
                         
-                        # Replace the tensors of the MPS:
                         spec = ITensors.replacebond!(
                             sdata.psi_list[j],
                             p,
@@ -511,7 +797,7 @@ function GeneralizedTwoSite!(
                             maxdim=sdata.mparams.psi_maxdim,
                             eigen_perturbation=drho,
                             ortho="left",
-                            normalize=false,
+                            normalize=true,
                             svd_alg="qr_iteration"
                             #min_blockdim=1
                         )
@@ -844,9 +1130,8 @@ function OneSitePairSweep!(
 
                             # Mix the new tensor with the old tensor:
                             T_old = sdata.psi_list[i][p]
-                            #sf = sqrt(scalar(T_old*dag(T_old)))
                             T_new = (1.0-op.theta)*T_new + op.theta*T_old
-                            T_new *= 1.0/sqrt(scalar(T_new*dag(T_new)))#*sf
+                            T_new *= 1.0/sqrt(scalar(T_new*dag(T_new)))
 
                             # Replace the tensor of the MPS:
                             sdata.psi_list[i][p] = T_new
@@ -1185,67 +1470,75 @@ function TwoSitePairSweep!(
                     )
 
                     M_list = [length(psi_decomp[i]) for i=1:M]
-
-                    # Solve the generalized eigenvalue problem:
-                    E, C, kappa = SolveGenEig(
-                        H_full, 
-                        S_full, 
-                        thresh=op.sd_thresh,
-                        eps=op.sd_eps
-                    )
                     
-                    T_news = []
                     do_replace = true
                     
-                    # Compute the replacement tensors:
-                    for i in [j1, j2]
-
-                        T_old = sdata.psi_list[i][p]*sdata.psi_list[i][p+1]
+                    if op.sd_method=="geneig"
                         
-                        i0, i1 = sum(M_list[1:i-1])+1, sum(M_list[1:i])
-
-                        t_vec = real.(C[i0:i1,1])
-                        
-                        if (NaN in t_vec) || (Inf in t_vec)
-                            do_replace = false
-                        end
-                            
-                        normalize!(t_vec)
-                        t_vec += ldelta*normalize(randn(M_list[i])) # Random noise term
-                        normalize!(t_vec)
-
-                        # Construct the new tensor and plug it in:
-                        T_new = sum([t_vec[k]*psi_decomp[i][k] for k=1:M_list[i]])
-
-                        # Mix the new tensor with the old tensor:
-                        T_old = sdata.psi_list[i][p]*sdata.psi_list[i][p+1]
-                        #sf = sqrt(scalar(T_old*dag(T_old)))
-                        T_new = (1.0-op.theta)*T_new + op.theta*T_old
-                        T_new *= 1.0/sqrt(scalar(T_new*dag(T_new)))#*sf
-
-                        push!(T_news, T_new)
-
-                        # Check the truncation error is not too large:
-                        uinds = commoninds(T_new, sdata.psi_list[i][p])
-                        U,S,V = svd(
-                            T_new, 
-                            uinds, 
-                            maxdim=sdata.mparams.psi_maxdim, 
-                            svd_alg="qr_iteration"
+                        # Solve the generalized eigenvalue problem:
+                        E, C, kappa = SolveGenEig(
+                            H_full, 
+                            S_full, 
+                            thresh=op.sd_thresh,
+                            eps=op.sd_eps
                         )
-
-                        if norm(U*S*V-T_new) > op.ttol
+                        
+                        t_vecs = []
+                        for (idx, i) in enumerate([j1, j2])
+                            i0, i1 = sum(M_list[1:i-1])+1, sum(M_list[1:i])
+                            t_vec = real.(C[i0:i1,1])
+                            push!(t_vecs, normalize(t_vec))
+                        end
+                        
+                    elseif op.sd_method=="bboptim"
+                        
+                        shadow = MultiGeomBB(
+                            H_full,
+                            S_full,
+                            [j1,j2],
+                            p,
+                            psi_decomp,
+                            sdata,
+                            op
+                        )
+                        
+                        t_vecs = [shadow.vec_list[j1], shadow.vec_list[j2]]
+                        
+                        #println("\n  $(shadow.E[1])  $(sdata.E[1])")
+                        
+                        if shadow.E[1] > op.sd_penalty*sdata.E[1]
                             do_replace = false
                         end
-
+                        
+                    end
+        
+                    if (NaN in t_vecs[1]) || (Inf in t_vecs[1]) || (NaN in t_vecs[2]) || (Inf in t_vecs[2])
+                        do_replace = false
                     end
                     
-                    # Do the prelacement:
+                    # Check the truncation error is not too large:
+                    if TruncError(t_vecs[1],j1,p,psi_decomp,sdata) > op.ttol || TruncError(t_vecs[2],j2,p,psi_decomp,sdata) > op.ttol
+                        do_replace = false
+                    end
+                    
+                    # Do the replacement:
                     if do_replace
                         
                         for (idx, i) in enumerate([j1, j2])
                             
-                            T_new = T_news[idx]
+                            T_old = sdata.psi_list[i][p]*sdata.psi_list[i][p+1]
+                        
+                            t_vec = t_vecs[idx]
+                            t_vec += ldelta*normalize(randn(M_list[i])) # Random noise term
+                            normalize!(t_vec)
+
+                            # Construct the new tensor and plug it in:
+                            T_new = sum([t_vec[k]*psi_decomp[i][k] for k=1:M_list[i]])
+
+                            # Mix the new tensor with the old tensor:
+                            T_old = sdata.psi_list[i][p]*sdata.psi_list[i][p+1]
+                            T_new = (1.0-op.theta)*T_new + op.theta*T_old
+                            T_new *= 1.0/sqrt(scalar(T_new*dag(T_new)))
                             
                             # Generate the "noise" term:
                             pmpo = ITensors.ProjMPO(sdata.ham_list[i])
