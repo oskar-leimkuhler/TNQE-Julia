@@ -12,7 +12,7 @@ import configparser
 
 
 # Runs the PySCF calculations and saves the output to a HDF5 file:
-def RunPySCF(config, gen_cubes=False):
+def RunPySCF(config, gen_cubes=False, nosec=False):
     
     mol_name = config['MOLECULE PROPERTIES']['mol_name']
     mol_spin = config['MOLECULE PROPERTIES'].getint('mol_spin', fallback=0)
@@ -33,7 +33,10 @@ def RunPySCF(config, gen_cubes=False):
     
     datestr = datetime.datetime.now()
     
-    filename = wd + mol_name + "_" + basis + "_" + datestr.strftime("%m%d%y%%%H%M%S") + ".hdf5"
+    if nosec:
+        filename = wd + mol_name + "_" + basis + "_" + datestr.strftime("%m%d%y%%%H%M") + ".hdf5"
+    else:
+        filename = wd + mol_name + "_" + basis + "_" + datestr.strftime("%m%d%y%%%H%M%S") + ".hdf5"
     
     with h5py.File(filename, 'w') as f:
         

@@ -45,6 +45,7 @@
     sd_thresh::String="inversion" # "none", "projection", or "inversion"
     sd_eps::Float64=1e-8 # Singular value cutoff
     sd_penalty::Float64=1.0 # Penalty factor for truncation error
+    sd_dtol::Float64=1e-4 # OHT-state overlap discard tolerance
     
 end
 
@@ -157,6 +158,79 @@ function OneHotTensors(T; force_diag=false)
     end
     
     return oht_list
+    
+end
+
+
+# Check if states are overlapping too much and discard if they are
+function DiscardOverlapping(H_full, S_full, oht_list, j, tol)
+    
+    println("\nBefore: ", cond(S_full))
+    E, C, kappa = SolveGenEig(H_full, S_full, thresh="inversion", eps=1e-8)
+    println(E[1])
+    
+    M_list = [length(oht) for oht in oht_list]
+    M = length(M_list)
+    M_tot = sum(M_list)
+            
+    j0, j1 = sum(M_list[1:j-1])+1, sum(M_list[1:j])
+    println(M_list)
+
+    S_red = zeros((M_tot-M_list[j], M_tot-M_list[j]))
+    S_red[1:j0-1,1:j0-1] = S_full[1:j0-1,1:j0-1]
+    S_red[j0:end,1:j0-1] = S_full[j1+1:end,1:j0-1]
+    S_red[1:j0-1,j0:end] = S_full[1:j0-1,j1+1:end]
+    S_red[j0:end,j0:end] = S_full[j1+1:end,j1+1:end]
+            
+    discards = []
+    
+    for l=1:M_list[j]
+
+        vphi = vcat(S_full[1:j0-1,j0+l-1], S_full[j1+1:end,j0+l-1])
+        
+        sqnm = transpose(vphi) * pinv(S_red, atol=1e-12) * vphi
+        
+        if 1.0-sqnm < tol # Mark the state for discarding
+            push!(discards, l)
+        end
+
+    end
+            
+    # Discard the overlapping states
+    oht_list[j] = [oht_list[j][l] for l in setdiff(1:M_list[j], discards)]
+    
+    H0 = H_full
+    S0 = S_full
+    
+    for (i,l) in enumerate(discards)
+        
+        col = j0+l-i
+        
+        H1 = zeros((M_tot-i,M_tot-i))
+        H1[1:col-1,1:col-1] = H0[1:col-1,1:col-1]
+        H1[1:col-1,col:end] = H0[1:col-1,col+1:end]
+        H1[col:end,1:col-1] = H0[col+1:end,1:col-1]
+        H1[col:end,col:end] = H0[col+1:end,col+1:end]
+        
+        S1 = zeros((M_tot-i,M_tot-i))
+        S1[1:col-1,1:col-1] = S0[1:col-1,1:col-1]
+        S1[1:col-1,col:end] = S0[1:col-1,col+1:end]
+        S1[col:end,1:col-1] = S0[col+1:end,1:col-1]
+        S1[col:end,col:end] = S0[col+1:end,col+1:end]
+        
+        H0 = H1
+        S0 = S1
+        
+    end
+    
+    H_full = H0
+    S_full = S0
+    
+    println("After: ", cond(S_full))
+    E, C, kappa = SolveGenEig(H_full, S_full, thresh="inversion", eps=1e-8)
+    println(E[1])
+    
+    return H_full, S_full, oht_list
     
 end
 
@@ -723,6 +797,8 @@ function GeneralizedTwoSite!(
                         block_ref
                     )
                     
+                    #H_full, S_full, psi_decomp = DiscardOverlapping(H_full, S_full, psi_decomp, j, op.sd_dtol)
+                    
                     M_list = [length(psi_decomp[i]) for i=1:M]
                     M_j = length(psi_decomp[j])
                     
@@ -742,6 +818,10 @@ function GeneralizedTwoSite!(
                         normalize!(t_vec)
                         
                         if (NaN in t_vec) || (Inf in t_vec)
+                            do_replace = false
+                        end
+                        
+                        if E[1] >= op.sd_penalty*sdata.E[1]
                             do_replace = false
                         end
                         
@@ -806,6 +886,7 @@ function GeneralizedTwoSite!(
                     
                     # Shift orthogonality center to site p+1:
                     orthogonalize!(sdata.psi_list[j], p+1)
+                    normalize!(sdata.psi_list[j])
                     psi_list_c[j] = sdata.psi_list[j]
                     
                     # Update the "left" blocks:
@@ -874,7 +955,7 @@ function OneSitePairSweep!(
     M = sdata.mparams.M
     
     if verbose
-        println("\nGENERALIZED TWO-SITE SWEEP ALGORITHM:")
+        println("\nTWO-STATE, ONE-SITE SWEEP ALGORITHM:")
     end
     
     if jpairs == nothing
@@ -1101,7 +1182,10 @@ function OneSitePairSweep!(
                         S_blocks,
                         block_ref
                     )
-
+                    
+                    #H_full, S_full, psi_decomp = DiscardOverlapping(H_full, S_full, psi_decomp, j1, op.sd_dtol)
+                    #H_full, S_full, psi_decomp = DiscardOverlapping(H_full, S_full, psi_decomp, j2, op.sd_dtol)
+                    
                     M_list = [length(psi_decomp[i]) for i=1:M]
 
                     # Solve the generalized eigenvalue problem:
@@ -1139,6 +1223,7 @@ function OneSitePairSweep!(
                             # Shift orthogonality center to site p+1:
                             if p != N
                                 orthogonalize!(sdata.psi_list[i], p+1)
+                                normalize!(sdata.psi_list[i])
                             end
                             
                         end
@@ -1224,7 +1309,6 @@ end
 
 
 
-
 function TwoSitePairSweep!(
         sdata::SubspaceProperties,
         op::OptimParameters;
@@ -1236,7 +1320,7 @@ function TwoSitePairSweep!(
     M = sdata.mparams.M
     
     if verbose
-        println("\nGENERALIZED TWO-SITE SWEEP ALGORITHM:")
+        println("\nTWO-STATE, TWO-SITE SWEEP ALGORITHM:")
     end
     
     if jpairs == nothing
@@ -1468,7 +1552,10 @@ function TwoSitePairSweep!(
                         S_blocks,
                         block_ref
                     )
-
+                    
+                    #H_full, S_full, psi_decomp = DiscardOverlapping(H_full, S_full, psi_decomp, j1, op.sd_dtol)
+                    #H_full, S_full, psi_decomp = DiscardOverlapping(H_full, S_full, psi_decomp, j2, op.sd_dtol)
+                    
                     M_list = [length(psi_decomp[i]) for i=1:M]
                     
                     do_replace = true
@@ -1490,6 +1577,10 @@ function TwoSitePairSweep!(
                             push!(t_vecs, normalize(t_vec))
                         end
                         
+                        if E[1] >= op.sd_penalty*sdata.E[1]
+                            do_replace = false
+                        end
+                        
                     elseif op.sd_method=="bboptim"
                         
                         shadow = MultiGeomBB(
@@ -1508,6 +1599,94 @@ function TwoSitePairSweep!(
                         
                         if shadow.E[1] > op.sd_penalty*sdata.E[1]
                             do_replace = false
+                        end
+                        
+                    elseif op.sd_method=="triple_geneig"
+                        
+                        # Solve the generalized eigenvalue problem:
+                        E, C, kappa = SolveGenEig(
+                            H_full, 
+                            S_full, 
+                            thresh=op.sd_thresh,
+                            eps=op.sd_eps
+                        )
+                        
+                        t_vecs = []
+                        for (idx, i) in enumerate([j1, j2])
+                            i0, i1 = sum(M_list[1:i-1])+1, sum(M_list[1:i])
+                            t_vec = real.(C[i0:i1,1])
+                            push!(t_vecs, normalize(t_vec))
+                        end
+                        
+                        ps = [p, p+1]
+                        
+                        # Construct the new tensors:
+                        Tj1 = sum([t_vecs[1][k]*psi_decomp[j1][k] for k=1:M_list[j1]])
+                        Tj2 = sum([t_vecs[2][k]*psi_decomp[j2][k] for k=1:M_list[j2]])
+                        
+                        for p_ind=1:2
+                            
+                            # Split by SVD:
+                            linds_j1 = commoninds(Tj1, sdata.psi_list[j1][ps[p_ind]])
+                            linds_j2 = commoninds(Tj2, sdata.psi_list[j2][ps[p_ind]])
+                            
+                            Uj1, Sj1, Vj1 = svd(Tj1, linds_j1, maxdim=sdata.mparams.psi_maxdim)
+                            Uj2, Sj2, Vj2 = svd(Tj2, linds_j2, maxdim=sdata.mparams.psi_maxdim)
+                            
+                            # single-site one-hot decomposition at site p:
+                            psi_decomp_p = deepcopy(psi_decomp)
+                            
+                            if p_ind==1
+                                psi_decomp_p[j1] = OneHotTensors(Uj1*Sj1)
+                                psi_decomp_p[j1] = [psid * Vj1 for psid in psi_decomp_p[j1]]
+                                psi_decomp_p[j2] = OneHotTensors(Uj2*Sj2)
+                                psi_decomp_p[j2] = [psid * Vj2 for psid in psi_decomp_p[j2]]
+                            else
+                                psi_decomp_p[j1] = OneHotTensors(Sj1*Vj1)
+                                psi_decomp_p[j1] = [psid * Uj1 for psid in psi_decomp_p[j1]]
+                                psi_decomp_p[j2] = OneHotTensors(Sj2*Vj2)
+                                psi_decomp_p[j2] = [psid * Uj2 for psid in psi_decomp_p[j2]]
+                            end
+                            
+                            M_list_p = [length(psi_decomp_p[i]) for i=1:M]
+                            
+                            # Re-compute H_full and S_full for site p:
+                            H_full_p, S_full_p = ExpandSubspace(
+                                sdata.H_mat,
+                                sdata.S_mat,
+                                psi_decomp_p,
+                                H_blocks,
+                                S_blocks,
+                                block_ref
+                            )
+                            
+                            # Solve the generalized eigenvalue problem:
+                            E_p, C_p, kappa_p = SolveGenEig(
+                                H_full_p, 
+                                S_full_p, 
+                                thresh=op.sd_thresh,
+                                eps=op.sd_eps
+                            )
+
+                            t_vecs_p = []
+                            for (idx, i) in enumerate([j1, j2])
+                                i0, i1 = sum(M_list_p[1:i-1])+1, sum(M_list_p[1:i])
+                                t_vec = real.(C_p[i0:i1,1])
+                                push!(t_vecs_p, normalize(t_vec))
+                            end
+                            
+                            Tj1 = sum([t_vecs_p[1][k]*psi_decomp_p[j1][k] for k=1:M_list_p[j1]])
+                            Tj2 = sum([t_vecs_p[2][k]*psi_decomp_p[j2][k] for k=1:M_list_p[j2]])
+                            
+                            t_vecs = [
+                                [scalar(Tj1*dag(psi_decomp[j1][k])) for k=1:M_list[j1]], 
+                                [scalar(Tj2*dag(psi_decomp[j2][k])) for k=1:M_list[j2]]
+                            ]
+                            
+                            if p_ind==2 && E_p[1] > op.sd_penalty*real(sdata.E[1])
+                                do_replace = false
+                            end
+                            
                         end
                         
                     end
@@ -1566,6 +1745,7 @@ function TwoSitePairSweep!(
                     # Shift orthogonality center to site p+1:
                     for i in [j1, j2]
                         orthogonalize!(sdata.psi_list[i], p+1)
+                        normalize!(sdata.psi_list[i])
                     end
 
                     # Update the "left" blocks:

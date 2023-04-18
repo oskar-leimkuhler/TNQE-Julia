@@ -67,8 +67,8 @@ function GenSubspace(
         perm_maxdim=512,
         perm_tol=1e-12,
         # Diagonalization parameters:
-        thresh="projection",
-        eps=1e-12,
+        thresh="inversion",
+        eps=1e-8,
         # DMRG settings:
         sites=nothing,
         dflt_sweeps=nothing,
