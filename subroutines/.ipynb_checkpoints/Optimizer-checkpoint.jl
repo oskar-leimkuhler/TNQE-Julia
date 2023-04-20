@@ -849,6 +849,11 @@ function GeneralizedTwoSite!(
                     if TruncError(t_vec, j, p, psi_decomp, sdata) > op.ttol    
                         do_replace = false
                     end
+                    
+                    # Check the coefficient vector is not numerically zero:
+                    if abs(norm(t_vec)-0.0) < 1e-16
+                        do_replace = false
+                    end
                         
                     # Replace the tensors of the MPS:
                     if do_replace
@@ -1203,8 +1208,10 @@ function OneSitePairSweep!(
 
                         t_vec = real.(C[i0:i1,1])
                         
-                        if !(NaN in t_vec) && !(Inf in t_vec)
+                        #display(t_vec)
                         
+                        if !(NaN in t_vec) && !(Inf in t_vec) && (norm(t_vec) > 1e-16) && (real(E[1]) <= op.sd_penalty*sdata.E[1])
+                            
                             normalize!(t_vec)
                             t_vec += ldelta*normalize(randn(M_list[i])) # Random noise term
                             normalize!(t_vec)
@@ -1219,13 +1226,13 @@ function OneSitePairSweep!(
 
                             # Replace the tensor of the MPS:
                             sdata.psi_list[i][p] = T_new
-
-                            # Shift orthogonality center to site p+1:
-                            if p != N
-                                orthogonalize!(sdata.psi_list[i], p+1)
-                                normalize!(sdata.psi_list[i])
-                            end
                             
+                        end
+                        
+                        # Shift orthogonality center to site p+1:
+                        if p != N
+                            orthogonalize!(sdata.psi_list[i], p+1)
+                            normalize!(sdata.psi_list[i])
                         end
 
                     end
@@ -1280,6 +1287,8 @@ function OneSitePairSweep!(
                     
                     # Recompute H, S, E, C, kappa:
                     GenSubspaceMats!(sdata)
+                    #display(sdata.H_mat)
+                    #display(sdata.S_mat)
                     SolveGenEig!(sdata)
                     
                     # Print some output
@@ -1577,7 +1586,7 @@ function TwoSitePairSweep!(
                             push!(t_vecs, normalize(t_vec))
                         end
                         
-                        if E[1] >= op.sd_penalty*sdata.E[1]
+                        if real(E[1]) >= op.sd_penalty*sdata.E[1]
                             do_replace = false
                         end
                         
@@ -1615,7 +1624,12 @@ function TwoSitePairSweep!(
                         for (idx, i) in enumerate([j1, j2])
                             i0, i1 = sum(M_list[1:i-1])+1, sum(M_list[1:i])
                             t_vec = real.(C[i0:i1,1])
-                            push!(t_vecs, normalize(t_vec))
+                            if !(NaN in t_vec) && !(Inf in t_vec) && norm(t_vec) > 1e-16
+                                push!(t_vecs, normalize(t_vec))
+                            else
+                                T_old = sdata.psi_list[i][p]*sdata.psi_list[i][p+1]
+                                push!(t_vecs, [scalar(T_old*dag(psi_decomp[i][k])) for k=1:M_list[i]])
+                            end
                         end
                         
                         ps = [p, p+1]
@@ -1624,67 +1638,77 @@ function TwoSitePairSweep!(
                         Tj1 = sum([t_vecs[1][k]*psi_decomp[j1][k] for k=1:M_list[j1]])
                         Tj2 = sum([t_vecs[2][k]*psi_decomp[j2][k] for k=1:M_list[j2]])
                         
-                        for p_ind=1:2
-                            
-                            # Split by SVD:
-                            linds_j1 = commoninds(Tj1, sdata.psi_list[j1][ps[p_ind]])
-                            linds_j2 = commoninds(Tj2, sdata.psi_list[j2][ps[p_ind]])
-                            
-                            Uj1, Sj1, Vj1 = svd(Tj1, linds_j1, maxdim=sdata.mparams.psi_maxdim)
-                            Uj2, Sj2, Vj2 = svd(Tj2, linds_j2, maxdim=sdata.mparams.psi_maxdim)
-                            
-                            # single-site one-hot decomposition at site p:
-                            psi_decomp_p = deepcopy(psi_decomp)
-                            
-                            if p_ind==1
-                                psi_decomp_p[j1] = OneHotTensors(Uj1*Sj1)
-                                psi_decomp_p[j1] = [psid * Vj1 for psid in psi_decomp_p[j1]]
-                                psi_decomp_p[j2] = OneHotTensors(Uj2*Sj2)
-                                psi_decomp_p[j2] = [psid * Vj2 for psid in psi_decomp_p[j2]]
-                            else
-                                psi_decomp_p[j1] = OneHotTensors(Sj1*Vj1)
-                                psi_decomp_p[j1] = [psid * Uj1 for psid in psi_decomp_p[j1]]
-                                psi_decomp_p[j2] = OneHotTensors(Sj2*Vj2)
-                                psi_decomp_p[j2] = [psid * Uj2 for psid in psi_decomp_p[j2]]
-                            end
-                            
-                            M_list_p = [length(psi_decomp_p[i]) for i=1:M]
-                            
-                            # Re-compute H_full and S_full for site p:
-                            H_full_p, S_full_p = ExpandSubspace(
-                                sdata.H_mat,
-                                sdata.S_mat,
-                                psi_decomp_p,
-                                H_blocks,
-                                S_blocks,
-                                block_ref
-                            )
-                            
-                            # Solve the generalized eigenvalue problem:
-                            E_p, C_p, kappa_p = SolveGenEig(
-                                H_full_p, 
-                                S_full_p, 
-                                thresh=op.sd_thresh,
-                                eps=op.sd_eps
-                            )
+                        for s=1:3
+                        
+                            for p_ind=1:2
 
-                            t_vecs_p = []
-                            for (idx, i) in enumerate([j1, j2])
-                                i0, i1 = sum(M_list_p[1:i-1])+1, sum(M_list_p[1:i])
-                                t_vec = real.(C_p[i0:i1,1])
-                                push!(t_vecs_p, normalize(t_vec))
-                            end
-                            
-                            Tj1 = sum([t_vecs_p[1][k]*psi_decomp_p[j1][k] for k=1:M_list_p[j1]])
-                            Tj2 = sum([t_vecs_p[2][k]*psi_decomp_p[j2][k] for k=1:M_list_p[j2]])
-                            
-                            t_vecs = [
-                                [scalar(Tj1*dag(psi_decomp[j1][k])) for k=1:M_list[j1]], 
-                                [scalar(Tj2*dag(psi_decomp[j2][k])) for k=1:M_list[j2]]
-                            ]
-                            
-                            if p_ind==2 && E_p[1] > op.sd_penalty*real(sdata.E[1])
-                                do_replace = false
+                                # Split by SVD:
+                                linds_j1 = commoninds(Tj1, sdata.psi_list[j1][ps[p_ind]])
+                                linds_j2 = commoninds(Tj2, sdata.psi_list[j2][ps[p_ind]])
+
+                                Uj1, Sj1, Vj1 = svd(Tj1, linds_j1, maxdim=sdata.mparams.psi_maxdim)#, min_blockdim=sdata.mparams.psi_maxdim)
+                                Uj2, Sj2, Vj2 = svd(Tj2, linds_j2, maxdim=sdata.mparams.psi_maxdim)#, min_blockdim=sdata.mparams.psi_maxdim)
+
+                                # single-site one-hot decomposition at site p:
+                                psi_decomp_p = deepcopy(psi_decomp)
+
+                                if p_ind==1
+                                    psi_decomp_p[j1] = OneHotTensors(Uj1*Sj1)
+                                    psi_decomp_p[j1] = [psid * Vj1 for psid in psi_decomp_p[j1]]
+                                    psi_decomp_p[j2] = OneHotTensors(Uj2*Sj2)
+                                    psi_decomp_p[j2] = [psid * Vj2 for psid in psi_decomp_p[j2]]
+                                else
+                                    psi_decomp_p[j1] = OneHotTensors(Sj1*Vj1)
+                                    psi_decomp_p[j1] = [psid * Uj1 for psid in psi_decomp_p[j1]]
+                                    psi_decomp_p[j2] = OneHotTensors(Sj2*Vj2)
+                                    psi_decomp_p[j2] = [psid * Uj2 for psid in psi_decomp_p[j2]]
+                                end
+
+                                M_list_p = [length(psi_decomp_p[i]) for i=1:M]
+
+                                # Re-compute H_full and S_full for site p:
+                                H_full_p, S_full_p = ExpandSubspace(
+                                    sdata.H_mat,
+                                    sdata.S_mat,
+                                    psi_decomp_p,
+                                    H_blocks,
+                                    S_blocks,
+                                    block_ref
+                                )
+
+                                # Solve the generalized eigenvalue problem:
+                                E_p, C_p, kappa_p = SolveGenEig(
+                                    H_full_p, 
+                                    S_full_p, 
+                                    thresh=op.sd_thresh,
+                                    eps=op.sd_eps
+                                )
+
+                                t_vecs_p = []
+                                for (idx, i) in enumerate([j1, j2])
+                                    i0, i1 = sum(M_list_p[1:i-1])+1, sum(M_list_p[1:i])
+                                    t_vec = real.(C_p[i0:i1,1])
+                                    if !(NaN in t_vec) && !(Inf in t_vec) && norm(t_vec) > 1e-16
+                                        push!(t_vecs_p, normalize(t_vec))
+                                    else
+                                        push!(t_vecs_p, [scalar([Tj1,Tj2][idx]*dag(psi_decomp_p[i][k])) for k=1:M_list_p[i]])
+                                    end
+                                end
+
+                                Tj1 = sum([t_vecs_p[1][k]*psi_decomp_p[j1][k] for k=1:M_list_p[j1]])
+                                Tj2 = sum([t_vecs_p[2][k]*psi_decomp_p[j2][k] for k=1:M_list_p[j2]])
+
+                                t_vecs = [
+                                    [scalar(Tj1*dag(psi_decomp[j1][k])) for k=1:M_list[j1]], 
+                                    [scalar(Tj2*dag(psi_decomp[j2][k])) for k=1:M_list[j2]]
+                                ]
+
+                                #println("\n$(real(E_p[1]))  $(sdata.E[1])")
+
+                                if s==3 && p_ind==2 && real(E_p[1]) > op.sd_penalty*sdata.E[1]
+                                    do_replace = false
+                                end
+
                             end
                             
                         end
@@ -1706,8 +1730,13 @@ function TwoSitePairSweep!(
                         for (idx, i) in enumerate([j1, j2])
                             
                             T_old = sdata.psi_list[i][p]*sdata.psi_list[i][p+1]
-                        
+                            
                             t_vec = t_vecs[idx]
+                                
+                            if norm(t_vec) < 1e-16
+                                t_vec = [scalar(T_old*dag(psi_decomp[i][k])) for k=1:M_list[i]]
+                            end
+                            
                             t_vec += ldelta*normalize(randn(M_list[i])) # Random noise term
                             normalize!(t_vec)
 
@@ -1821,6 +1850,67 @@ function TwoSitePairSweep!(
     
     if verbose
         println("\nDone!\n")
+    end
+    
+end
+
+
+function SeedNoise!(
+        sdata::SubspaceProperties,
+        delta::Float64,
+        noise::Float64;
+        jset=nothing,
+        verbose=false
+    )
+    
+    N = sdata.chem_data.N_spt
+    M = sdata.mparams.M
+    
+    if jset==nothing
+        jset=collect(1:M)
+    end
+    
+    for j in jset
+        
+        for p=1:N-1
+            
+            orthogonalize!(sdata.psi_list[j], p)
+            
+            T_old = sdata.psi_list[j][p] * sdata.psi_list[j][p+1]
+            
+            psi_decomp = OneHotTensors(T_old)
+            
+            t_vec = [scalar(T_old*dag(psi_decomp[k])) for k=1:length(psi_decomp)]
+            
+            t_vec += delta*normalize(randn(length(t_vec)))
+            
+            normalize!(t_vec)
+            
+            T_new = sum([t_vec[k]*psi_decomp[k] for k=1:length(t_vec)])
+            
+            # Generate the "noise" term:
+            pmpo = ITensors.ProjMPO(sdata.ham_list[j])
+            ITensors.set_nsite!(pmpo,2)
+            ITensors.position!(pmpo, sdata.psi_list[j], p)
+            drho = noise*ITensors.noiseterm(pmpo,T_new,"left")
+            
+            # Replace the tensors of the MPS:
+            spec = ITensors.replacebond!(
+                sdata.psi_list[j],
+                p,
+                T_new;
+                maxdim=sdata.mparams.psi_maxdim,
+                eigen_perturbation=drho,
+                ortho="left",
+                normalize=true,
+                svd_alg="qr_iteration"
+                #min_blockdim=1
+            )
+            
+            normalize!(sdata.psi_list[j])
+            
+        end
+        
     end
     
 end

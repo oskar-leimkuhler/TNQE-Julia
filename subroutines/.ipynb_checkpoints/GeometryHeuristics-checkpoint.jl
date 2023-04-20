@@ -47,7 +47,7 @@
 end
 
 
-function softmax(alpha, x)
+function LogSumExp(alpha, x)
     
     xmax = maximum(x)
     
@@ -87,7 +87,7 @@ function InfDist(ord_list, Ipq; eta=-2, shrp=3.0)
             
             nu_pq = [float(abs(inds[j][p]-inds[j][q]))^eta for j=1:M]
             
-            inf_dist += sign(eta)*Ipq[p,q]*softmax(shrp, nu_pq)
+            inf_dist += sign(eta)*Ipq[p,q]*LogSumExp(shrp, nu_pq)
             
         end
     end
@@ -102,7 +102,9 @@ function InfDistAnnealing(
         Ipq_in,
         M,
         gp; 
+        ord_list=nothing,
         constrained_edges=[], 
+        anchors=[],
         return_inf=false,
         verbose=false
     )
@@ -116,7 +118,9 @@ function InfDistAnnealing(
         Ipq[edge[2],edge[1]] = gp.cweight
     end
     
-    ord_list = [randperm(N_sites) for j=1:M]
+    if ord_list==nothing
+        ord_list = [randperm(N_sites) for j=1:M]
+    end
     e = InfDist(ord_list, Ipq, eta=gp.eta, shrp=gp.shrp)
     e_best = e
     
@@ -124,15 +128,17 @@ function InfDistAnnealing(
         
         ord_list_c = deepcopy(ord_list)
         
-        for ord in ord_list_c
-            # Number of applied swaps to generate a new ordering \\
-            # ... (sampled from an exponential distribution):
-            num_swaps = Int(ceil(gp.swap_mult*randexp()[1]))
+        for (j,ord) in enumerate(ord_list_c)
+            if !(j in anchors)
+                # Number of applied swaps to generate a new ordering \\
+                # ... (sampled from an exponential distribution):
+                num_swaps = Int(ceil(gp.swap_mult*randexp()[1]))
 
-            # Apply these swaps randomly:
-            for swap=1:num_swaps
-                swap_ind = rand(1:N_sites-1)
-                ord[swap_ind:swap_ind+1]=reverse(ord[swap_ind:swap_ind+1])
+                # Apply these swaps randomly:
+                for swap=1:num_swaps
+                    swap_ind = rand(1:N_sites-1)
+                    ord[swap_ind:swap_ind+1]=reverse(ord[swap_ind:swap_ind+1])
+                end
             end
         end
 

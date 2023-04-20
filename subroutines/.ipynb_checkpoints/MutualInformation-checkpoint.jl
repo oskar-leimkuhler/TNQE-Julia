@@ -52,7 +52,7 @@ end
 
 
 # Computes the mutual information:
-function MutualInformation(psi, chemical_data; dim=4, spatial=true)
+function MutualInformation(psi, ord, chemical_data; dim=4, spatial=true)
     
     if spatial==true
         N_sites = chemical_data.N_spt
@@ -67,7 +67,7 @@ function MutualInformation(psi, chemical_data; dim=4, spatial=true)
         
         rdm_p = kRDM(psi, [p])
 
-        S1[p] = vnEntropy(rdm_p)
+        S1[ord[p]] = vnEntropy(rdm_p)
         
     end
 
@@ -78,8 +78,8 @@ function MutualInformation(psi, chemical_data; dim=4, spatial=true)
             
             rdm_pq = kRDM(psi, [p,q])
             
-            S2[p,q] = vnEntropy(rdm_pq)
-            S2[q,p] = S2[p,q]
+            S2[ord[p],ord[q]] = vnEntropy(rdm_pq)
+            S2[ord[q],ord[p]] = S2[ord[p],ord[q]]
         end
     end
 
