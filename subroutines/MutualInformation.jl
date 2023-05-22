@@ -54,6 +54,8 @@ end
 # Computes the mutual information:
 function MutualInformation(psi, ord, chemical_data; dim=4, spatial=true)
     
+    orb = invperm(ord)
+    
     if spatial==true
         N_sites = chemical_data.N_spt
     else
@@ -91,7 +93,7 @@ function MutualInformation(psi, ord, chemical_data; dim=4, spatial=true)
             if p==q
                 Ipq[p,q] = 0.0
             else
-                Ipq[p,q] = 0.5*(S1[p]+S1[q]-S2[p,q])
+                Ipq[p,q] = S1[p]+S1[q]-S2[p,q]
             end
         end
     end

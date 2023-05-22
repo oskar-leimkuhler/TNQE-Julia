@@ -6,12 +6,15 @@ using HDF5
 
 
 # The chemical data structure:
-struct ChemProperties
+mutable struct ChemProperties
     mol_name::String
     basis::String
     geometry::String
     e_rhf::Float64
     e_fci::Float64
+    fci_vec
+    fci_str
+    fci_addr
     e_nuc::Float64
     h1e
     h2e
@@ -37,11 +40,16 @@ function ReadIn(fname)
         grp = fid[geometry]
         
         e_rhf = read(grp, "e_rhf")
-        e_fci = read(grp, "e_fci")
         if read(grp, "e_fci")=="N/A"
             e_fci = 0.0
+            fci_vec = nothing
+            fci_str = nothing
+            fci_addr = nothing
         else
             e_fci = read(grp, "e_fci")
+            fci_vec = read(grp, "fci_vec")
+            fci_str = read(grp, "fci_str")
+            fci_addr = read(grp, "fci_addr")
         end
         h1e = read(grp, "h1e")
         h2e = read(grp, "h2e")
@@ -51,7 +59,7 @@ function ReadIn(fname)
         N_spt = size(h1e, 1)
         N = 2*N_spt
         
-        new_cdata = ChemProperties(mol_name, basis, geometry, e_rhf, e_fci, e_nuc, h1e, h2e, N_el, N, N_spt)
+        new_cdata = ChemProperties(mol_name, basis, geometry, e_rhf, e_fci, fci_vec, fci_str, fci_addr, e_nuc, h1e, h2e, N_el, N, N_spt)
         
         push!(cdata_list, new_cdata)
         

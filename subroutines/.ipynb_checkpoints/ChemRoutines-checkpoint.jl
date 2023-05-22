@@ -2,6 +2,7 @@
 
 # Packages:
 using ITensors
+using Combinatorics
 
 
 # Globally declaring the c_dag and c operators in the JW representation:
@@ -229,3 +230,167 @@ end
 
 
 
+# Convert from PySCF alpha*beta format to 2^N bitstring array, then reshape to 4^N_spt array
+function FCIArray(chem_data; sign_vec=nothing)
+    
+    fci_vec = chem_data.fci_vec
+    fci_str = chem_data.fci_str
+    fci_addr = chem_data.fci_addr
+    N = chem_data.N
+    N_spt = chem_data.N_spt
+    N_el = chem_data.N_el
+    N_a = Int(N_el/2)
+    
+    if sign_vec==nothing
+        sign_vec = ones(size(fci_vec))
+    end
+    
+    fci_vec .*= sign_vec
+    
+    dimvec = Tuple([4 for d=1:N_spt])
+    
+    fci_array = zeros(dimvec)
+    
+    blen = length(fci_str)
+    
+    for (da, str_a) in enumerate(fci_str), (db, str_b) in enumerate(fci_str)
+        
+        a_index = reverse(parse.( Int, split(lpad(str_a[3:end], N_spt,"0"), "") ) .+ 1)
+        b_index = reverse(parse.( Int, split(lpad(str_b[3:end], N_spt,"0"), "") ) .+ 1)
+        
+        #permute!(a_index, ord)
+        #permute!(b_index, ord)
+        
+        #println(a_index, b_index)
+        
+        full_index = ones(Int, length(a_index))
+        
+        for p=1:length(a_index)
+            
+            if a_index[p]==2 && b_index[p]==1
+                full_index[p] = 2
+            elseif a_index[p]==1 && b_index[p]==2
+                full_index[p] = 3
+            elseif a_index[p]==2 && b_index[p]==2
+                full_index[p] = 4
+            end
+            
+        end
+        
+        fci_array[full_index...] = fci_vec[da, db]
+        
+    end
+    
+    return fci_array;
+    
+end
+
+
+function FCIMPS(chem_data; verbose=false)
+    
+    verbose && println("Computing FCI MPS:")
+    
+    N = chem_data.N
+    N_spt = chem_data.N_spt
+    N_el = chem_data.N_el
+    N_a = Int(N_el/2)
+    
+    # Generate the Hamiltonian MPO
+    opsum = GenOpSum(chem_data, collect(1:N_spt))
+    
+    sites = siteinds("Electron", N_spt, conserve_qns=true)
+    
+    ham_mpo = MPO(
+        opsum, 
+        sites,
+        cutoff=1e-16,
+        maxdim=2^16
+    )
+    
+    # Get the alpha/beta bitstring list:
+    bstr_list = []
+    
+    for (i, combo) in enumerate(combinations(collect(1:N_spt), N_a))
+        bstr = ones(Int, N_spt)
+        for p=1:N_spt
+            if p in combo
+                bstr[p] = 2
+            end
+        end
+        push!(bstr_list, bstr)
+    end
+    
+    # Get the full bistring list:
+    fbstr_list = []
+    for bstr_a in bstr_list, bstr_b in bstr_list
+        
+        full_bstr = ones(Int, N_spt)
+        
+        for p=1:N_spt
+            if bstr_a[p]==2 && bstr_b[p]==1
+                full_bstr[p] = 2
+            elseif bstr_a[p]==1 && bstr_b[p]==2
+                full_bstr[p] = 3
+            elseif bstr_a[p]==2 && bstr_b[p]==2
+                full_bstr[p] = 4
+            end
+        end
+        
+        push!(fbstr_list, full_bstr)
+        
+    end
+    
+    n_bstr = length(fbstr_list) 
+    
+    # Obtain the bitstring H-matrix
+    H_fci = zeros((n_bstr, n_bstr))
+    
+    c = 0
+    for i=1:n_bstr, j=i:n_bstr
+        
+        bmps_i = MPS(sites, fbstr_list[i])
+        bmps_j = MPS(sites, fbstr_list[j])
+        
+        H_fci[i,j] = inner(bmps_i', ham_mpo, bmps_j)
+        H_fci[j,i] = H_fci[i,j]
+        
+        c += 1
+        if verbose && div(c, 100) > div(c-1, 100)
+            print("Progress: $(c)/$(Int((n_bstr^2+n_bstr)/2))  \r")
+            flush(stdout)
+        end
+        
+    end
+    
+    # Diagonalize and obtain the ground state coefficients
+    fact = eigen(H_fci)
+    
+    E = fact.values
+    C = fact.vectors
+    verbose && println("\n$(E[1]+chem_data.e_nuc)")
+    fci_vec = C[:,1]
+    
+    # Construct the FCI array
+    dimvec = Tuple([4 for d=1:N_spt])
+    fci_array = zeros(dimvec)
+    
+    for (i, fbstr) in enumerate(fbstr_list)
+        
+        fci_array[fbstr...] = fci_vec[i]
+        
+    end
+    
+    # Convert to MPS
+    
+    fci_mps = MPS(
+        fci_array, 
+        sites, 
+        cutoff=1e-16,
+        maxdim=2^16
+    )
+    
+    verbose && println("Done!")
+    
+    return fci_mps, ham_mpo
+    
+end

@@ -8,23 +8,6 @@
     numloop::Int=1 # Number of loops per iter
     numopt::Int=-1 # Number of states/pairs to optimize per iter
     
-    # Geometry update move parameters:
-    move_type::String="none" # "none", "random" or "shuffle"
-    swap_num::Int=-1 # How may states to permute (-1 => all)
-    swap_mult::Float64=0.4 # Swappiness multiplier
-    permute_states::Bool=false # Permute the states after geom. update?
-    
-    # State "recycling" parameters:
-    rnum::Int=1 # How may states to recycle? (0 for 'off')
-    rswp::Int=1 # Number of sweeps
-    rnoise::Float64=1e-5 # Noise level
-    
-    # Move acceptance hyperparameters:
-    afunc::String="exp" # "step", "poly", "exp", or "stun"
-    tpow::Float64=3.0 # Power for "poly" function
-    alpha::Float64=1e1 # Sharpness for "exp" and "stun" functions
-    gamma::Float64=1e2 # Additional parameter for "stun" function
-    
     # Site decomposition parameters:
     noise::Vector{Float64}=[1e-5] # Size of DMRG noise term at each iter
     delta::Vector{Float64}=[1e-3] # Size of Gaussian noise term
@@ -36,12 +19,7 @@
     eps::Float64=1e-8 # Singular value cutoff
     
     # Site decomposition solver parameters:
-    sd_method::String="geneig" # "annealing", "bboptim", or "geneig"
-    sd_maxiter::Int=2000 # Number of iterations
-    sd_stun::Bool=true # Use stochastic tunnelling?
-    sd_alpha::Float64=1e-4 # Sharpness for "exp" and "stun" functions
-    sd_delta::Float64=1e-3 # Step size
-    sd_gamma::Float64=1e3 # Additional parameter for "stun" function
+    sd_method::String="geneig" # "geneig" or "triple_geneig"
     sd_thresh::String="inversion" # "none", "projection", or "inversion"
     sd_eps::Float64=1e-8 # Singular value cutoff
     sd_penalty::Float64=1.0 # Penalty factor for truncation error
@@ -235,66 +213,6 @@ function DiscardOverlapping(H_full, S_full, oht_list, j, tol)
 end
 
 
-function ApplyRandomSwaps!(
-        sd::SubspaceProperties,
-        op::OptimParameters,
-        l
-    )
-    
-    M = sd.mparams.M
-    
-    # Randomly select geometries:
-    j_set = circshift(collect(1:M), l-1)[1:op.swap_num]
-
-    # Randomly apply swaps:
-    for j in j_set
-
-        # Number of applied swaps to generate a new ordering (sampled from an exponential distribution):
-        num_swaps = Int(floor(op.swap_mult*randexp()[1]))
-
-        # Apply these swaps randomly:
-        for swap=1:num_swaps
-            p = rand(1:sd.chem_data.N_spt-1)
-            sd.ord_list[j][p:p+1]=reverse(sd.ord_list[j][p:p+1])
-        end
-
-    end
-    
-end
-
-
-function GeometryMove!(sd, op, l)
-    
-    old_ords = deepcopy(sd.ord_list)
-    
-    # Permute the orderings:
-    if op.move_type=="random"
-        ApplyRandomSwaps!(sd, op, l)
-    elseif op.move_type=="shuffle"
-        sd.ord_list=shuffle(sd.ord_list)
-    end
-
-    # Re-compute permutation tensors
-    GenPermOps!(sd)
-    GenHams!(sd)
-
-    # Permute the states:
-    if op.permute_states
-        for j=1:sd.mparams.M
-            sd.psi_list[j] = Permute(
-                sd.psi_list[j], 
-                siteinds(sd.psi_list[j]), 
-                old_ords[j], 
-                sd.ord_list[j],
-                # Heavy truncation!
-                maxdim=sd.mparams.psi_maxdim
-            )
-        end
-    end
-    
-end
-
-
 # Update an inner-product block by contraction:
 function UpdateBlock(
         block, 
@@ -427,254 +345,6 @@ function TruncError(c_j, j, p, psi_decomp, sd)
     return norm(U*S*V - T)
     
 end
-
-
-function BBCostFunc(
-        c::Vector{Float64}, 
-        j_list,
-        p,
-        psi_decomp,
-        shadow_in::SubspaceShadow, 
-        sd::SubspaceProperties,
-        op::OptimParameters;
-        verbose=false
-    )
-    
-    shadow = copy(shadow_in)
-    
-    j0 = 1
-    j1 = 0
-    
-    t_err = 0.0
-    
-    for j in j_list
-        
-        j1 += shadow.M_list[j]
-        
-        c_j = normalize(c[j0:j1])
-        
-        T = sum([c_j[k]*psi_decomp[j][k] for k=1:shadow.M_list[j]])
-        
-        linds = commoninds(T, sd.psi_list[j][p])
-        
-        U,S,V = svd(T, linds, maxdim=sd.mparams.psi_maxdim)
-        
-        T_trunc = U*S*V
-        
-        t_j = normalize([scalar(dag(psi_decomp[j][k])*T_trunc) for k=1:shadow.M_list[j]])
-        
-        shadow.vec_list[j] = t_j
-        
-        j0 = j1+1
-        
-    end
-    
-    GenSubspaceMats!(shadow)
-    
-    SolveGenEig!(shadow, thresh=op.sd_thresh, eps=op.sd_eps)
-    
-    return shadow.E[1]
-    
-end
-
-
-function MultiGeomBB(
-        H_full,
-        S_full,
-        j_list,
-        p,
-        psi_decomp,
-        sd::SubspaceProperties,
-        op::OptimParameters
-    )
-    
-    M_list = [length(psid) for psid in psi_decomp]
-    M = length(M_list)
-    M_tot = sum(M_list)
-            
-    shadow = SubspaceShadow(
-        sd.chem_data,
-        M_list,
-        op.sd_thresh,
-        op.sd_eps,
-        [zeros(M_list[j]) for j=1:M],
-        H_full,
-        S_full,
-        zeros((M,M)),
-        zeros((M,M)),
-        zeros(M),
-        zeros((M,M)),
-        0.0
-    )
-    
-    E, C, kappa = SolveGenEig(
-        shadow.H_full, 
-        shadow.S_full, 
-        thresh=op.sd_thresh, 
-        eps=op.sd_eps
-    )
-    
-    c0 = Float64[]
-    
-    # Fill in the initial vec list:
-    for j=1:length(shadow.M_list)
-        
-        j0 = sum(shadow.M_list[1:j-1])+1
-        j1 = sum(shadow.M_list[1:j])
-        
-        shadow.vec_list[j] = normalize(C[j0:j1,1])
-        
-        if j in j_list
-            #T_0 = sd.psi_list[j][p] * sd.psi_list[j][p+1]
-            #shadow.vec_list[j] = normalize([scalar(dag(psi_decomp[j][k])*T_0) for k=1:M_list[j]])
-            c0 = vcat(c0, shadow.vec_list[j])
-        #else
-            #shadow.vec_list[j] = [1.0]
-        end
-        
-    end
-    
-    GenSubspaceMats!(shadow)
-    SolveGenEig!(shadow)
-            
-    f(c) = BBCostFunc(
-        c, 
-        j_list,
-        p,
-        psi_decomp,
-        shadow,
-        sd,
-        op
-    )
-
-    res = bboptimize(
-        f, 
-        c0; 
-        NumDimensions=length(c0), 
-        SearchRange = (-1.0, 1.0), 
-        MaxFuncEvals=op.sd_maxiter, 
-        TraceMode=:silent
-    )
-
-    c_opt = best_candidate(res)
-    e_opt = best_fitness(res)
-    
-    """
-    BBCostFunc(
-        c_opt, 
-        j_list,
-        p,
-        psi_decomp,
-        shadow,
-        sd,
-        op,
-        verbose=true
-    )
-    """
-    
-    j0 = 1
-    j1 = 0
-    
-    # Replace the vectors:
-    for j in j_list
-
-        j1 += shadow.M_list[j]
-
-        c_j = normalize(c_opt[j0:j1])
-        
-        T = sum([c_j[k]*psi_decomp[j][k] for k=1:shadow.M_list[j]])
-        
-        linds = commoninds(T, sd.psi_list[j][p])
-        
-        U,S,V = svd(T, linds, maxdim=sd.mparams.psi_maxdim)
-        
-        T_trunc = U*S*V
-        
-        t_j = normalize([scalar(dag(psi_decomp[j][k])*T_trunc) for k=1:shadow.M_list[j]])
-        
-        shadow.vec_list[j] = t_j
-
-        j0 = j1+1
-
-    end
-
-    GenSubspaceMats!(shadow)
-    SolveGenEig!(shadow)
-    
-    return shadow
-    
-end
-
-
-function MultiGeomAnneal!(
-        shadow::SubspaceShadow,  
-        op::OptimParameters
-    )
-    
-    M_tot = sum(shadow.M_list)
-
-    c0 = zeros(M_tot)
-
-    for j=1:length(shadow.M_list)
-        j0 = sum(shadow.M_list[1:j-1])+1
-        j1 = sum(shadow.M_list[1:j])
-        c0[j0:j1] = shadow.vec_list[j]
-    end
-    
-    E_best = shadow.E[1]
-            
-    for l=1:maxiter
-
-        sh2 = copy(shadow)
-
-        # Update all states
-        for j=1:length(sh2.M_list)
-            j0 = sum(sh2.M_list[1:j-1])+1
-            j1 = sum(sh2.M_list[1:j])
-
-            c_j = sh2.vec_list[j] + delta*randn(sh2.M_list[j])#/sqrt(l)
-            sh2.vec_list[j] = c_j/sqrt(transpose(c_j)*sh2.S_full[j0:j1,j0:j1]*c_j)
-        end
-
-        # re-compute matrix elements and diagonalize
-        GenSubspaceMats!(sh2)
-        SolveGenEig!(sh2)
-        
-        E_old = shadow.E[1]
-        E_new = sh2.E[1]
-
-        # Accept move with some probability
-        beta = alpha*l#^4
-
-        if stun
-            F_0 = Fstun(E_best, E_old, gamma)
-            F_1 = Fstun(E_best, E_new, gamma)
-            P = ExpProb(F_1, F_0, beta)
-        else
-            P = ExpProb(E_old, E_new, beta)
-        end
-
-        if E_new < E_best
-            E_best = E_new
-        end
-
-        if rand(Float64) < P
-            
-            # Replace the vectors:
-            for j=1:length(shadow.M_list)
-                shadow.vec_list[j] = sh2.vec_list[j]
-            end
-
-            GenSubspaceMats!(shadow)
-
-            SolveGenEig!(shadow)
-
-        end
-        
-    end
-    
-end
-
 
 
 function GeneralizedTwoSite!(
@@ -825,22 +495,88 @@ function GeneralizedTwoSite!(
                             do_replace = false
                         end
                         
-                    elseif op.sd_method=="bboptim"
+                    elseif op.method=="triple_geneig"
                         
-                        shadow = MultiGeomBB(
-                            H_full,
-                            S_full,
-                            [j],
-                            p,
-                            psi_decomp,
-                            sdata,
-                            op
+                        # Solve the generalized eigenvalue problem:
+                        E, C, kappa = SolveGenEig(
+                            H_full, 
+                            S_full, 
+                            thresh=op.sd_thresh,
+                            eps=op.sd_eps
                         )
                         
-                        t_vec = shadow.vec_list[j]
+                        j0, j1 = sum(M_list[1:j-1])+1, sum(M_list[1:j])
+                        t_vec = real.(C[j0:j1,1])
+                        if !(NaN in t_vec) && !(Inf in t_vec) && norm(t_vec) > 1e-16
+                            t_vec = normalize(t_vec)
+                        else
+                            T_old = sdata.psi_list[j][p]*sdata.psi_list[j][p+1]
+                            t_vec = [scalar(T_old*dag(psi_decomp[j][k])) for k=1:M_list[j]]
+                        end
                         
-                        if shadow.E[1] >= op.sd_penalty*sdata.E[1]
-                            do_replace = false
+                        ps = [p, p+1]
+                        
+                        # Construct the new tensor:
+                        T = sum([t_vec[k]*psi_decomp[j][k] for k=1:M_list[j]])
+                        
+                        for s=1:3
+                        
+                            for p_ind=1:2
+
+                                # Split by SVD:
+                                linds = commoninds(T, sdata.psi_list[j][ps[p_ind]])
+
+                                U, S, V = svd(T, linds, maxdim=sdata.mparams.psi_maxdim)
+
+                                # single-site one-hot decomposition at site p:
+                                psi_decomp_p = deepcopy(psi_decomp)
+
+                                if p_ind==1
+                                    psi_decomp_p[j] = OneHotTensors(U*S)
+                                    psi_decomp_p[j] = [psid * V for psid in psi_decomp_p[j]]
+                                else
+                                    psi_decomp_p[j] = OneHotTensors(S*V)
+                                    psi_decomp_p[j] = [psid * U for psid in psi_decomp_p[j]]
+                                end
+
+                                M_list_p = [length(psi_decomp_p[i]) for i=1:M]
+
+                                # Re-compute H_full and S_full for site p:
+                                H_full_p, S_full_p = ExpandSubspace(
+                                    sdata.H_mat,
+                                    sdata.S_mat,
+                                    psi_decomp_p,
+                                    H_blocks,
+                                    S_blocks,
+                                    block_ref
+                                )
+
+                                # Solve the generalized eigenvalue problem:
+                                E_p, C_p, kappa_p = SolveGenEig(
+                                    H_full_p, 
+                                    S_full_p, 
+                                    thresh=op.sd_thresh,
+                                    eps=op.sd_eps
+                                )
+
+                                j0, j1 = sum(M_list_p[1:j-1])+1, sum(M_list_p[1:j])
+                                t_vec_p = real.(C_p[j0:j1,1])
+                                if !(NaN in t_vec_p) && !(Inf in t_vec_p) && norm(t_vec_p) > 1e-16
+                                    t_vec_p = normalize(t_vec_p)
+                                else
+                                    t_vec_p = [scalar(T*dag(psi_decomp_p[j][k])) for k=1:M_list_p[j]]
+                                end
+
+                                T = sum([t_vec_p[k]*psi_decomp_p[j][k] for k=1:M_list_p[j]])
+
+                                t_vec = [scalar(T*dag(psi_decomp[j][k])) for k=1:M_list[j]]
+
+                                if s==3 && p_ind==2 && real(E_p[1]) > op.sd_penalty*sdata.E[1]
+                                    do_replace = false
+                                end
+
+                            end
+                            
                         end
                         
                     end
@@ -1287,8 +1023,6 @@ function OneSitePairSweep!(
                     
                     # Recompute H, S, E, C, kappa:
                     GenSubspaceMats!(sdata)
-                    #display(sdata.H_mat)
-                    #display(sdata.S_mat)
                     SolveGenEig!(sdata)
                     
                     # Print some output
@@ -1589,27 +1323,7 @@ function TwoSitePairSweep!(
                         if real(E[1]) >= op.sd_penalty*sdata.E[1]
                             do_replace = false
                         end
-                        
-                    elseif op.sd_method=="bboptim"
-                        
-                        shadow = MultiGeomBB(
-                            H_full,
-                            S_full,
-                            [j1,j2],
-                            p,
-                            psi_decomp,
-                            sdata,
-                            op
-                        )
-                        
-                        t_vecs = [shadow.vec_list[j1], shadow.vec_list[j2]]
-                        
-                        #println("\n  $(shadow.E[1])  $(sdata.E[1])")
-                        
-                        if shadow.E[1] > op.sd_penalty*sdata.E[1]
-                            do_replace = false
-                        end
-                        
+                    
                     elseif op.sd_method=="triple_geneig"
                         
                         # Solve the generalized eigenvalue problem:
@@ -1928,16 +1642,6 @@ function MultiGeomOptim!(
     N = sdata.chem_data.N_spt
     M = sdata.mparams.M
     
-    # Initialize the cost function:
-    f = sdata.E[1] 
-    f_best = f
-    f_new = f
-    
-    # The "master" OptimParameters object:
-    op1 = op_list[1]
-    
-    n_accept = 0
-    
     if verbose
         println("\n----| Starting MultiGeomOptim!\n")
     end
@@ -1949,96 +1653,41 @@ function MultiGeomOptim!(
             println("\n----| Repetition $(r)/$(reps):\n")
         end
         
-        # Copy the sdata before making changes:
-        sdata_c = copy(sdata)
-        
-        j_offset = 1 - r
-        
         for action in rep_struct
             
             # Select the OptimParameters object:
             op = op_list[action[2]]
-            
-            if action[1]=="ordmove" # Perform a geometry (ordering) update:
                 
-                if op.swap_num==-1
-                    op.swap_num = M
-                end
+            if action[1]=="seednoise" # Seed with noise:
                 
-                # Update the geometries:
-                if op.move_type != "none"
-                    if verbose
-                        println("----| Updating geometries...\n")
-                    end
-                    GeometryMove!(sdata_c, op, r)
-                else
-                    println("Move type is \"none\".\n")
-                end
-                
-            elseif action[1]=="recycle" # "Recycle" some of the MPSs:
-                
-                if op.rnum==-1
-                    op.rnum = M
-                end
-                
-                # "Recycle" the basis states:
-                if op.rnum != 0
-                    if verbose
-                        println("----| Recycling states...\n")
-                    end
-
-                    j_set = circshift(collect(1:M), j_offset)[1:op.rnum]
-                        
-                    for j in j_set
-                        
-                        hf_occ_j = [FillHF(
-                                sdata_c.ord_list[j][p], 
-                                sdata_c.chem_data.N_el) for p=1:N]
-                        
-                        sdata_c.psi_list[j] = randomMPS(
-                            sdata_c.sites, 
-                            hf_occ_j, 
-                            linkdims=sdata_c.mparams.psi_maxdim
-                        )
-                    end
-                    
-                else
-                    println("----| Recycle number is 0.\n")
-                end
+                SeedNoise!(
+                    sdata, 
+                    op.delta[r], 
+                    op.noise[r], 
+                    verbose=verbose
+                )
                 
             elseif action[1]=="twosite" # Complete a generalized two-site sweep:
                 
-                GeneralizedTwoSite!(sdata_c, op, j_offset=j_offset, verbose=verbose)
+                GeneralizedTwoSite!(
+                    sdata, 
+                    op, 
+                    verbose=verbose
+                )
                 
             elseif action[1]=="onesitepair" # Do a paired one-site sweep
                 
-                jpairs = []
-                for k=1:Int(floor(M/2))
-                    for j=1:M
-                        push!(jpairs, sort([j, mod1(j+k, M)]))
-                    end
-                end
-                
                 OneSitePairSweep!(
-                    sdata_c, 
+                    sdata, 
                     op, 
-                    #jpairs=jpairs[1:op.numopt], 
                     verbose=verbose
                 )
                 
             elseif action[1]=="twositepair" # Do a paired two-site sweep
                 
-                jpairs = []
-                for k=1:Int(floor(M/2))
-                    for j=1:M
-                        push!(jpairs, sort([j, mod1(j+k, M)]))
-                    end
-                end
-                
                 TwoSitePairSweep!(
-                    sdata_c, 
-                    op, 
-                    jpairs=jpairs[1:op.numopt], 
+                    sdata, 
+                    op,  
                     verbose=verbose
                 )
                 
@@ -2048,44 +1697,10 @@ function MultiGeomOptim!(
             
         end
         
-        # Accept move with some probability:
-        f_new = sdata_c.E[1]
-
-        if op1.afunc=="step"
-            P = StepProb(f, f_new)
-        elseif op1.afunc=="poly"
-            P = PolyProb(f, f_new, op1.alpha, tpow=op1.tpow)
-        elseif op1.afunc=="exp"
-            P = ExpProb(f, f_new, op1.alpha)
-        elseif op1.afunc=="stun"
-            F_0 = Fstun(f_best, f, op1.gamma)
-            F_1 = Fstun(f_best, f_new, op1.gamma)
-            P = ExpProb(F_1, F_0, op1.alpha)
-        elseif op1.afunc=="flat"
-            P = 1
-        else
-            println("----| Invalid probability function!")
-            return nothing
-        end
-
-        if f_new < f_best
-            f_best = f_new
-        end
-
-        if rand()[1] < P
-            copyto!(sdata, sdata_c)
-            n_accept += 1
-            f=f_new
-            outcome="accept!"
-        else
-            outcome="reject!"
-        end
         
         if verbose
             println("\n----| Repetition $(r)/$(reps) complete!")
-            println("----| E_new = $(f_new); E_best = $(f)")
-            ratio = Int(round(100.0*n_accept/r, digits=0))
-            println("----| Outcome = \"$(outcome)\"; acceptance ratio = $(ratio)%\n")
+            println("----| E = $(sdata.E[1]+sdata.chem_data.e_nuc)")
         end
         
     end

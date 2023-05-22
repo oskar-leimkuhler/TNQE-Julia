@@ -85,10 +85,25 @@ def RunPySCF(config, gen_cubes=False, nosec=False):
                 e_rhf = rhf_obj.kernel(mo_init,mocc_init)
 
             if run_fci:
+                
                 fci_obj = fci.FCI(rhf_obj)
-                e_fci = fci_obj.kernel()[0]
+                
+                e_fci, fci_vec = fci_obj.kernel()
+                
+                norb = np.shape(rhf_obj1.mo_coeff)[0]
+                
+                fci_str0 = fci.cistring.make_strings([*range(norb)], mol_obj.nelec[0])
+                
+                fci_str = [bin(x) for x in fci_str0]
+                
+                fci_addr = [fci.cistring.str2addr(norb, mol_obj.nelec[0], x) for x in fci_str0]
+                
+                #print(fci_str)
+                
             else:
-                e_fci = "N/A"
+                
+                e_fci, fci_vec, fci_str, fci_addr = "N/A", "N/A", "N/A", "N/A"
+                
                 
             if loc_orbs:
                 # C matrix stores the AO to localized orbital coefficients
@@ -120,6 +135,9 @@ def RunPySCF(config, gen_cubes=False, nosec=False):
             
             rhf_data = grp.create_dataset("e_rhf", data=e_rhf)
             fci_data = grp.create_dataset("e_fci", data=e_fci)
+            fci_vecs = grp.create_dataset("fci_vec", data=fci_vec)
+            fci_strs = grp.create_dataset("fci_str", data=fci_str)
+            fci_addr = grp.create_dataset("fci_addr", data=fci_addr)
             h1e_data = grp.create_dataset("h1e", data=h1e)
             h2e_data = grp.create_dataset("h2e", data=h2e)
             nel_data = grp.create_dataset("nel", data=mol_obj.nelectron)

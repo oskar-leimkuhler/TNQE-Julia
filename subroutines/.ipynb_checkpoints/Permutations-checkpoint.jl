@@ -402,3 +402,60 @@ function FastPMPO(sites, ord1, ord2; do_fswap=true, no_rev=false, tol=1e-12, max
 end
 
 
+# return a reversed copy of an MPS:
+function ReverseMPS(psi)
+    
+    N = length(psi)
+    
+    sites=siteinds(psi)
+    
+    psi2 = MPS(N)
+    
+    for p=1:N
+        
+        q=N-p+1
+        
+        si_p = sites[p]
+        si_q = sites[q]
+        
+        Tq = deepcopy(psi[q])
+        
+        replaceind!(Tq, si_q, si_p)
+        
+        psi2[p] = Tq
+        
+    end
+    
+    return psi2
+    
+end
+
+
+function ReverseMPO(mpo)
+    
+    N = length(mpo)
+    
+    sites=siteinds(mpo)
+    
+    mpo2 = MPO(N)
+    
+    for p=1:N
+        
+        q=N-p+1
+        
+        si_p = sites[p]
+        si_q = sites[q]
+        
+        Tq = deepcopy(mpo[q])
+        
+        replaceind!(Tq, si_q[1], si_p[1])
+        replaceind!(Tq, si_q[2], si_p[2])
+        
+        mpo2[p] = Tq
+        
+    end
+    
+    return mpo2
+    
+end
+

@@ -3369,3 +3369,379 @@ function RecycleStates!(sd, op, rsweeps, l)
     end
     
 end
+
+
+function ApplyRandomSwaps!(
+        sd::SubspaceProperties,
+        op::OptimParameters,
+        l
+    )
+    
+    M = sd.mparams.M
+    
+    # Randomly select geometries:
+    j_set = circshift(collect(1:M), l-1)[1:op.swap_num]
+
+    # Randomly apply swaps:
+    for j in j_set
+
+        # Number of applied swaps to generate a new ordering (sampled from an exponential distribution):
+        num_swaps = Int(floor(op.swap_mult*randexp()[1]))
+
+        # Apply these swaps randomly:
+        for swap=1:num_swaps
+            p = rand(1:sd.chem_data.N_spt-1)
+            sd.ord_list[j][p:p+1]=reverse(sd.ord_list[j][p:p+1])
+        end
+
+    end
+    
+end
+
+
+function GeometryMove!(sd, op, l)
+    
+    old_ords = deepcopy(sd.ord_list)
+    
+    # Permute the orderings:
+    if op.move_type=="random"
+        ApplyRandomSwaps!(sd, op, l)
+    elseif op.move_type=="shuffle"
+        sd.ord_list=shuffle(sd.ord_list)
+    end
+
+    # Re-compute permutation tensors
+    GenPermOps!(sd)
+    GenHams!(sd)
+
+    # Permute the states:
+    if op.permute_states
+        for j=1:sd.mparams.M
+            sd.psi_list[j] = Permute(
+                sd.psi_list[j], 
+                siteinds(sd.psi_list[j]), 
+                old_ords[j], 
+                sd.ord_list[j],
+                # Heavy truncation!
+                maxdim=sd.mparams.psi_maxdim
+            )
+        end
+    end
+    
+end
+
+
+
+function BBCostFunc(
+        c::Vector{Float64}, 
+        j_list,
+        p,
+        psi_decomp,
+        shadow_in::SubspaceShadow, 
+        sd::SubspaceProperties,
+        op::OptimParameters;
+        verbose=false
+    )
+    
+    shadow = copy(shadow_in)
+    
+    j0 = 1
+    j1 = 0
+    
+    t_err = 0.0
+    
+    for j in j_list
+        
+        j1 += shadow.M_list[j]
+        
+        c_j = normalize(c[j0:j1])
+        
+        T = sum([c_j[k]*psi_decomp[j][k] for k=1:shadow.M_list[j]])
+        
+        linds = commoninds(T, sd.psi_list[j][p])
+        
+        U,S,V = svd(T, linds, maxdim=sd.mparams.psi_maxdim)
+        
+        T_trunc = U*S*V
+        
+        t_j = normalize([scalar(dag(psi_decomp[j][k])*T_trunc) for k=1:shadow.M_list[j]])
+        
+        shadow.vec_list[j] = t_j
+        
+        j0 = j1+1
+        
+    end
+    
+    GenSubspaceMats!(shadow)
+    
+    SolveGenEig!(shadow, thresh=op.sd_thresh, eps=op.sd_eps)
+    
+    return shadow.E[1]
+    
+end
+
+
+function MultiGeomBB(
+        H_full,
+        S_full,
+        j_list,
+        p,
+        psi_decomp,
+        sd::SubspaceProperties,
+        op::OptimParameters
+    )
+    
+    M_list = [length(psid) for psid in psi_decomp]
+    M = length(M_list)
+    M_tot = sum(M_list)
+            
+    shadow = SubspaceShadow(
+        sd.chem_data,
+        M_list,
+        op.sd_thresh,
+        op.sd_eps,
+        [zeros(M_list[j]) for j=1:M],
+        H_full,
+        S_full,
+        zeros((M,M)),
+        zeros((M,M)),
+        zeros(M),
+        zeros((M,M)),
+        0.0
+    )
+    
+    E, C, kappa = SolveGenEig(
+        shadow.H_full, 
+        shadow.S_full, 
+        thresh=op.sd_thresh, 
+        eps=op.sd_eps
+    )
+    
+    c0 = Float64[]
+    
+    # Fill in the initial vec list:
+    for j=1:length(shadow.M_list)
+        
+        j0 = sum(shadow.M_list[1:j-1])+1
+        j1 = sum(shadow.M_list[1:j])
+        
+        shadow.vec_list[j] = normalize(C[j0:j1,1])
+        
+        if j in j_list
+            #T_0 = sd.psi_list[j][p] * sd.psi_list[j][p+1]
+            #shadow.vec_list[j] = normalize([scalar(dag(psi_decomp[j][k])*T_0) for k=1:M_list[j]])
+            c0 = vcat(c0, shadow.vec_list[j])
+        #else
+            #shadow.vec_list[j] = [1.0]
+        end
+        
+    end
+    
+    GenSubspaceMats!(shadow)
+    SolveGenEig!(shadow)
+            
+    f(c) = BBCostFunc(
+        c, 
+        j_list,
+        p,
+        psi_decomp,
+        shadow,
+        sd,
+        op
+    )
+
+    res = bboptimize(
+        f, 
+        c0; 
+        NumDimensions=length(c0), 
+        SearchRange = (-1.0, 1.0), 
+        MaxFuncEvals=op.sd_maxiter, 
+        TraceMode=:silent
+    )
+
+    c_opt = best_candidate(res)
+    e_opt = best_fitness(res)
+    
+    """
+    BBCostFunc(
+        c_opt, 
+        j_list,
+        p,
+        psi_decomp,
+        shadow,
+        sd,
+        op,
+        verbose=true
+    )
+    """
+    
+    j0 = 1
+    j1 = 0
+    
+    # Replace the vectors:
+    for j in j_list
+
+        j1 += shadow.M_list[j]
+
+        c_j = normalize(c_opt[j0:j1])
+        
+        T = sum([c_j[k]*psi_decomp[j][k] for k=1:shadow.M_list[j]])
+        
+        linds = commoninds(T, sd.psi_list[j][p])
+        
+        U,S,V = svd(T, linds, maxdim=sd.mparams.psi_maxdim)
+        
+        T_trunc = U*S*V
+        
+        t_j = normalize([scalar(dag(psi_decomp[j][k])*T_trunc) for k=1:shadow.M_list[j]])
+        
+        shadow.vec_list[j] = t_j
+
+        j0 = j1+1
+
+    end
+
+    GenSubspaceMats!(shadow)
+    SolveGenEig!(shadow)
+    
+    return shadow
+    
+end
+
+
+function MultiGeomAnneal!(
+        shadow::SubspaceShadow,  
+        op::OptimParameters
+    )
+    
+    M_tot = sum(shadow.M_list)
+
+    c0 = zeros(M_tot)
+
+    for j=1:length(shadow.M_list)
+        j0 = sum(shadow.M_list[1:j-1])+1
+        j1 = sum(shadow.M_list[1:j])
+        c0[j0:j1] = shadow.vec_list[j]
+    end
+    
+    E_best = shadow.E[1]
+            
+    for l=1:maxiter
+
+        sh2 = copy(shadow)
+
+        # Update all states
+        for j=1:length(sh2.M_list)
+            j0 = sum(sh2.M_list[1:j-1])+1
+            j1 = sum(sh2.M_list[1:j])
+
+            c_j = sh2.vec_list[j] + delta*randn(sh2.M_list[j])#/sqrt(l)
+            sh2.vec_list[j] = c_j/sqrt(transpose(c_j)*sh2.S_full[j0:j1,j0:j1]*c_j)
+        end
+
+        # re-compute matrix elements and diagonalize
+        GenSubspaceMats!(sh2)
+        SolveGenEig!(sh2)
+        
+        E_old = shadow.E[1]
+        E_new = sh2.E[1]
+
+        # Accept move with some probability
+        beta = alpha*l#^4
+
+        if stun
+            F_0 = Fstun(E_best, E_old, gamma)
+            F_1 = Fstun(E_best, E_new, gamma)
+            P = ExpProb(F_1, F_0, beta)
+        else
+            P = ExpProb(E_old, E_new, beta)
+        end
+
+        if E_new < E_best
+            E_best = E_new
+        end
+
+        if rand(Float64) < P
+            
+            # Replace the vectors:
+            for j=1:length(shadow.M_list)
+                shadow.vec_list[j] = sh2.vec_list[j]
+            end
+
+            GenSubspaceMats!(shadow)
+
+            SolveGenEig!(shadow)
+
+        end
+        
+    end
+    
+end
+
+
+
+"""
+elseif op.sd_method=="bboptim"
+
+    shadow = MultiGeomBB(
+        H_full,
+        S_full,
+        [j1,j2],
+        p,
+        psi_decomp,
+        sdata,
+        op
+    )
+
+    t_vecs = [shadow.vec_list[j1], shadow.vec_list[j2]]
+
+    #println("\n  $(shadow.E[1])  $(sdata.E[1])")
+
+    if shadow.E[1] > op.sd_penalty*sdata.E[1]
+        do_replace = false
+    end
+"""
+
+"""
+
+elseif op.sd_method=="bboptim"
+                        
+    shadow = MultiGeomBB(
+        H_full,
+        S_full,
+        [j],
+        p,
+        psi_decomp,
+        sdata,
+        op
+    )
+
+    t_vec = shadow.vec_list[j]
+
+    if shadow.E[1] >= op.sd_penalty*sdata.E[1]
+        do_replace = false
+    end
+
+end
+
+"""
+
+
+"""
+# Geometry update move parameters:
+move_type::String="none" # "none", "random" or "shuffle"
+swap_num::Int=-1 # How may states to permute (-1 => all)
+swap_mult::Float64=0.4 # Swappiness multiplier
+permute_states::Bool=false # Permute the states after geom. update?
+
+# State "recycling" parameters:
+rnum::Int=1 # How may states to recycle? (0 for 'off')
+rswp::Int=1 # Number of sweeps
+rnoise::Float64=1e-5 # Noise level
+
+# Move acceptance hyperparameters:
+afunc::String="exp" # "step", "poly", "exp", or "stun"
+tpow::Float64=3.0 # Power for "poly" function
+alpha::Float64=1e1 # Sharpness for "exp" and "stun" functions
+gamma::Float64=1e2 # Additional parameter for "stun" function
+"""

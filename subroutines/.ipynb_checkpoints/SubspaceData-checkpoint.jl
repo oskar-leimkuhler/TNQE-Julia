@@ -35,15 +35,10 @@ mutable struct SubspaceProperties
     sites::Vector
     dflt_sweeps::Sweeps
     ord_list::Vector{Vector{Int}}
-    #rev_list::Vector{Bool}
     psi_list::Vector{MPS}
     ham_list::Vector{MPO}
-    slh_list::Vector{MPO}
     perm_ops::Vector{Vector{MPO}}
     rev_flag::Vector{Vector{Bool}}
-    tethers::Vector{Vector{MPS}}
-    #perm_alt::Vector{Vector{Vector{MPO}}}
-    #perm_hams::Vector{Vector{MPO}}
     H_mat::Matrix{Float64}
     S_mat::Matrix{Float64}
     E::Vector{Float64}
@@ -124,15 +119,10 @@ function GenSubspace(
         sites,
         dflt_sweeps,
         [],
-        #[false for j=1:mparams.M],
         [],
         [],
         [],
         [],
-        [],
-        [],
-        #[],
-        #[],
         zeros((mparams.M,mparams.M)),
         zeros((mparams.M,mparams.M)),
         zeros(mparams.M),
@@ -153,15 +143,10 @@ function copy(sd::SubspaceProperties)
         sd.sites,
         sd.dflt_sweeps,
         deepcopy(sd.ord_list),
-        #deepcopy(sd.rev_list),
         deepcopy(sd.psi_list),
         deepcopy(sd.ham_list),
-        deepcopy(sd.slh_list),
         deepcopy(sd.perm_ops),
         deepcopy(sd.rev_flag),
-        deepcopy(sd.tethers),
-        #deepcopy(sd.perm_alt),
-        #deepcopy(sd.perm_hams),
         deepcopy(sd.H_mat),
         deepcopy(sd.S_mat),
         deepcopy(sd.E),
@@ -179,10 +164,8 @@ function copyto!(sd1::SubspaceProperties, sd2::SubspaceProperties)
     sd1.ord_list = deepcopy(sd2.ord_list)
     sd1.psi_list = deepcopy(sd2.psi_list)
     sd1.ham_list = deepcopy(sd2.ham_list)
-    sd1.slh_list = deepcopy(sd2.slh_list)
     sd1.perm_ops = deepcopy(sd2.perm_ops)
     sd1.rev_flag = deepcopy(sd2.rev_flag)
-    #sd1.tethers = deepcopy(sd2.tethers)
     sd1.H_mat = deepcopy(sd2.H_mat)
     sd1.S_mat = deepcopy(sd2.S_mat)
     sd1.E = deepcopy(sd2.E)
@@ -258,60 +241,6 @@ function GenStates!(
     end
     
 end
-
-
-function GenExcited!(
-        sd::SubspaceProperties;
-        sweeps=nothing,
-        weight=1.0,
-        levs=nothing,
-        denseify=false,
-        verbose=false
-    )
-    
-    if levs==nothing
-        levs = collect(1:sd.mparams.M)
-    end
-    
-    sd.psi_list = []
-    sd.ham_list = []
-    sd.tethers = []
-    
-    for j=1:sd.mparams.M
-        
-        ords = [sd.ord_list[j] for k=1:levs[j]]
-        
-        # Generate a set of states:
-        psis, hams = GenStates(
-            sd.chem_data, 
-            sd.sites, 
-            ords, 
-            sweeps, 
-            ovlp_opt=true,
-            weight=weight,
-            perm_tol=sd.mparams.perm_tol, 
-            perm_maxdim=sd.mparams.perm_maxdim, 
-            ham_tol=sd.mparams.ham_tol, 
-            ham_maxdim=sd.mparams.ham_maxdim, 
-            singleham=sd.mparams.singleham,
-            verbose=verbose
-        )
-        
-        if denseify
-            push!(sd.psi_list, dense(psis[end]))
-            push!(sd.ham_list, dense(hams[1]))
-            push!(sd.tethers, [dense(psis[j]) for j=1:length(psis)-1])
-        else
-            push!(sd.psi_list, psis[end])
-            push!(sd.ham_list, hams[1])
-            push!(sd.tethers, psis[1:end-1])
-        end
-        
-    end
-    
-end
-
-
 
 
 function GenPermOps!(
@@ -458,175 +387,5 @@ function GenHams!(
         
     end
     
-    
-end
-
-
-# Generate a set of "localized" Hamiltonian MPOs \\
-# ... by suppression of the "long-range" coefficients
-function GenSLocHams!(
-        sd::SubspaceProperties;
-        sl_base=2.0
-    )
-    
-    sd.slh_list = []
-    
-    for j=1:sd.mparams.M
-        
-        opsum = GenOpSum(
-            sd.chem_data, 
-            sd.ord_list[j], 
-            sloc=true,
-            sl_base=sl_base
-        )
-
-        slh_j = MPO(
-            opsum, 
-            sd.sites, 
-            cutoff=sd.mparams.ham_tol, 
-            maxdim=sd.mparams.ham_maxdim
-        )
-        
-        push!(sd.slh_list, slh_j)
-        
-    end
-    
-    
-end
-
-
-# Generate "suppression-localized" MPS states:
-function GenSLocStates!(
-        sd::SubspaceProperties;
-        sweeps=nothing,
-        verbose=false
-        
-    )
-    
-    sd.psi_list = []
-    
-    if sweeps==nothing
-        sweeps = sd.dflt_sweeps
-    end
-    
-    if verbose
-        println("Generating states:")
-    end
-    
-    for j=1:sd.mparams.M
-        
-        psi_j, H_jj = RunDMRG(
-            sd.chem_data, 
-            sd.sites, 
-            sd.ord_list[j], 
-            sd.slh_list[j], 
-            sweeps
-        )
-        
-        push!(sd.psi_list, psi_j)
-        
-        if verbose
-            print("Progress: [",string(j),"/",string(sd.mparams.M),"] \r")
-            flush(stdout)
-        end
-        
-    end
-    
-    if verbose
-        println("\nDone!")
-    end
-    
-end
-    
-    
-# The "subspace shadow" data structure:
-# Preserves all matrix elements between subspace basis states
-# without keeping MPS's etc.
-mutable struct SubspaceShadow
-    chem_data::ChemProperties
-    M_list::Vector{Int}
-    thresh::String
-    eps::Float64
-    vec_list::Vector{Vector{Float64}}
-    H_full::Matrix{Float64}
-    S_full::Matrix{Float64}
-    H_mat::Matrix{Float64}
-    S_mat::Matrix{Float64}
-    E::Vector{Float64}
-    C::Matrix{Float64}
-    kappa::Float64
-end
-
-
-function copy(sh::SubspaceShadow)
-    
-    sh2 = SubspaceShadow(
-        sh.chem_data,
-        sh.M_list,
-        sh.thresh,
-        sh.eps,
-        deepcopy(sh.vec_list),
-        deepcopy(sh.H_full),
-        deepcopy(sh.S_full),
-        deepcopy(sh.H_mat),
-        deepcopy(sh.S_mat),
-        deepcopy(sh.E),
-        deepcopy(sh.C),
-        sh.kappa
-    )
-    
-    return sh2
-    
-end
-
-
-function GenSubspaceMats!(sh::SubspaceShadow)
-    
-    M_gm = length(sh.M_list)
-    
-    for i=1:M_gm, j=i:M_gm
-        
-        i0 = sum(sh.M_list[1:i-1])+1
-        i1 = sum(sh.M_list[1:i])
-        
-        j0 = sum(sh.M_list[1:j-1])+1
-        j1 = sum(sh.M_list[1:j])
-        
-        sh.H_mat[i,j] = transpose(sh.vec_list[i]) * sh.H_full[i0:i1,j0:j1] * sh.vec_list[j]
-        sh.H_mat[j,i] = sh.H_mat[i,j]
-        
-        sh.S_mat[i,j] = transpose(sh.vec_list[i]) * sh.S_full[i0:i1,j0:j1] * sh.vec_list[j]
-        sh.S_mat[j,i] = sh.S_mat[i,j]
-        
-    end
-    
-end
-
-
-function SolveGenEig!(
-        sh::SubspaceShadow;
-        thresh=nothing,
-        eps=nothing,
-        verbose=false
-    )
-    
-    if thresh==nothing
-        thresh=sh.thresh
-    end
-    
-    if eps==nothing
-        eps=sh.eps
-    end
-    
-    sh.E, sh.C, sh.kappa = SolveGenEig(
-        sh.H_mat,
-        sh.S_mat,
-        thresh=thresh,
-        eps=eps
-    )
-    
-    if verbose
-        DisplayEvalData(sh.chem_data, sh.H_mat, sh.E, sh.C, sh.kappa)
-    end
     
 end
