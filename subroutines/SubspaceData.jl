@@ -389,3 +389,23 @@ function GenHams!(
     
     
 end
+
+
+function ShuffleStates!(
+        sd::SubspaceProperties;
+        perm=nothing
+    )
+    
+    if perm==nothing # Random shuffle
+        perm = randperm(sd.mparams.M)
+    end
+    
+    permute!(sd.ord_list, perm)
+    permute!(sd.psi_list, perm)
+    permute!(sd.ham_list, perm)
+    GenPermOps!(sd)
+    
+    GenSubspaceMats!(sd)
+    SolveGenEig!(sd)
+    
+end

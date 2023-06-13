@@ -3745,3 +3745,92 @@ tpow::Float64=3.0 # Power for "poly" function
 alpha::Float64=1e1 # Sharpness for "exp" and "stun" functions
 gamma::Float64=1e2 # Additional parameter for "stun" function
 """
+
+
+"""
+
+function SWAPHam!(
+        sdata,
+        j,
+        p,
+        swap_tensor
+    )
+    
+    swap_tensor2 = deepcopy(swap_tensor)
+    setprime!(swap_tensor2, 0, plev=1)
+    
+    temp_tensor = sdata.ham_list[j][p] * sdata.ham_list[j][p+1]
+    
+    temp_tensor *= dag(swap_tensor)
+    
+    setprime!(temp_tensor, 1, plev=2)
+    
+    temp_tensor *= swap_tensor2
+    
+    setprime!(temp_tensor, 0, plev=2)
+    
+    temp_inds = uniqueinds(sdata.ham_list[j][p],sdata.ham_list[j][p+1])
+    
+    U,S,V = svd(
+        temp_tensor,
+        temp_inds,
+        cutoff=sdata.mparams.ham_tol,
+        maxdim=sdata.mparams.ham_maxdim,
+        mindim=1,
+        alg="qr_iteration"
+    )
+    
+    sdata.ham_list[j][p] = U
+    sdata.ham_list[j][p+1] = S*V
+    
+    swaptags!(sdata.ham_list[j][p], "u", "l=$(p)")
+    swaptags!(sdata.ham_list[j][p+1], "u", "l=$(p)")
+    
+end
+
+function MergeSwap!(
+        sdata,
+        jperm_ops,
+        swap_tensor,
+        p;
+        j1=1,
+        j2=2
+    )
+    
+    M = sdata.mparams.M
+    
+    p_pos = findall(x->x==p, sdata.ord_list[j1])[1]
+    pp1_pos = findall(x->x==p+1, sdata.ord_list[j1])[1]
+
+    sdata.ord_list[j1][p_pos] = p+1
+    sdata.ord_list[j1][pp1_pos] = p
+    
+    # Re-generate Hamiltonians and PMPOs:
+    GenHams!(sdata)
+    GenPermOps!(sdata)
+    
+    for i in setdiff(collect(1:M), [j1])
+
+        jperm_ops[1][i] = ApplySwapMPO(
+            jperm_ops[1][i], 
+            dag(swap_tensor), 
+            p, 
+            sdata.mparams.perm_tol, 
+            sdata.mparams.perm_maxdim, 
+            1
+        )
+
+    end
+
+    SWAPHam!(
+        sdata,
+        j1,
+        p,
+        swap_tensor
+    )
+    
+    GenPermOps!(sdata)
+    
+end
+
+"""

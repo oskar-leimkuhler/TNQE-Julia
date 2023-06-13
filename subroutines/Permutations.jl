@@ -115,11 +115,11 @@ function ApplySwapMPO(mpo, swap, idx, tol, maxdim, mindim)
     
     orthogonalize!(mpo,idx)
     
-    # Apply swap to the unprimed indices:
-    temp_tensor = (mpo[idx] * mpo[idx+1]) * dag(swap)
+    # Apply swap to the primed indices:
+    temp_tensor = (mpo[idx] * mpo[idx+1]) * swap
     
     # De-prime the temp_tensor:
-    setprime!(temp_tensor, 0, plev=1)
+    setprime!(temp_tensor, 1, plev=2)
     
     temp_inds = uniqueinds(mpo[idx],mpo[idx+1])
     

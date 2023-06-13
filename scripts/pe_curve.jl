@@ -24,13 +24,13 @@ include("../subroutines/Optimizer.jl")
 # Read in parameters from config file:
 conf_path = ARGS[1]
 
-conf, op_list, gp_list, swp_list = FetchConfig("../$(conf_path)")
+conf, op_list, gp_list, swp_list = FetchConfig(pwd()*"/../$(conf_path)")
 
 # Run computes and collect data:
 subspace_vec = []
 Ipq_vec = []
 
-fid = h5open("../datasets/tnqe_data/$(conf.jobname)_$(Dates.today()).h5", "w")
+fid = h5open(pwd()*"/../datasets/tnqe_data/$(conf.jobname)_$(Dates.today()).h5", "w")
 
 fid["conf_path"] = conf_path
 

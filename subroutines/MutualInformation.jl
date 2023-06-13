@@ -52,7 +52,7 @@ end
 
 
 # Computes the mutual information:
-function MutualInformation(psi, ord, chemical_data; dim=4, spatial=true)
+function MutualInformation(psi::MPS, ord, chemical_data; dim=4, spatial=true)
     
     orb = invperm(ord)
     
@@ -101,3 +101,56 @@ function MutualInformation(psi, ord, chemical_data; dim=4, spatial=true)
     return S1, S2, Ipq
     
 end
+
+
+"""
+# Computes the mutual information:
+function MutualInformation(sdata::SubspaceProperties)
+    
+    orb = invperm(ord)
+    
+    if spatial==true
+        N_sites = chemical_data.N_spt
+    else
+        N_sites = chemical_data.N
+    end
+
+    # One- and two-orbital entropies:
+    S1 = zeros(N_sites)
+    
+    for p=1:N_sites
+        
+        rdm_p = kRDM(psi, [p])
+
+        S1[ord[p]] = vnEntropy(rdm_p)
+        
+    end
+
+    S2 = zeros((N_sites,N_sites))
+    
+    for p=1:N_sites
+        for q=p+1:N_sites
+            
+            rdm_pq = kRDM(psi, [p,q])
+            
+            S2[ord[p],ord[q]] = vnEntropy(rdm_pq)
+            S2[ord[q],ord[p]] = S2[ord[p],ord[q]]
+        end
+    end
+
+    # The mutual information:
+    Ipq = Array{Float64}(undef,N_sites,N_sites)
+    
+    for p=1:N_sites
+        for q=1:N_sites
+            if p==q
+                Ipq[p,q] = 0.0
+            else
+                Ipq[p,q] = S1[p]+S1[q]-S2[p,q]
+            end
+        end
+    end
+    
+    return S1, S2, Ipq
+    
+"""
