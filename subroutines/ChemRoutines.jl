@@ -286,7 +286,7 @@ function FCIArray(chem_data; sign_vec=nothing)
 end
 
 
-function FCIMPS(chem_data; verbose=false)
+function FCIMPS(chem_data; spin=0, verbose=false)
     
     verbose && println("Computing FCI MPS:")
     
@@ -308,21 +308,31 @@ function FCIMPS(chem_data; verbose=false)
     )
     
     # Get the alpha/beta bitstring list:
-    bstr_list = []
+    bstr_list = [[],[]]
     
-    for (i, combo) in enumerate(combinations(collect(1:N_spt), N_a))
+    for (i, combo) in enumerate(combinations(collect(1:N_spt), N_a+spin))
         bstr = ones(Int, N_spt)
         for p=1:N_spt
             if p in combo
                 bstr[p] = 2
             end
         end
-        push!(bstr_list, bstr)
+        push!(bstr_list[1], bstr)
+    end
+    
+    for (i, combo) in enumerate(combinations(collect(1:N_spt), N_a-spin))
+        bstr = ones(Int, N_spt)
+        for p=1:N_spt
+            if p in combo
+                bstr[p] = 2
+            end
+        end
+        push!(bstr_list[2], bstr)
     end
     
     # Get the full bistring list:
     fbstr_list = []
-    for bstr_a in bstr_list, bstr_b in bstr_list
+    for bstr_a in bstr_list[1], bstr_b in bstr_list[2]
         
         full_bstr = ones(Int, N_spt)
         
@@ -338,6 +348,99 @@ function FCIMPS(chem_data; verbose=false)
         
         push!(fbstr_list, full_bstr)
         
+    end
+    
+    n_bstr = length(fbstr_list) 
+    
+    # Obtain the bitstring H-matrix
+    H_fci = zeros((n_bstr, n_bstr))
+    
+    c = 0
+    for i=1:n_bstr, j=i:n_bstr
+        
+        bmps_i = MPS(sites, fbstr_list[i])
+        bmps_j = MPS(sites, fbstr_list[j])
+        
+        H_fci[i,j] = inner(bmps_i', ham_mpo, bmps_j)
+        H_fci[j,i] = H_fci[i,j]
+        
+        c += 1
+        if verbose && div(c, 100) > div(c-1, 100)
+            print("Progress: $(c)/$(Int((n_bstr^2+n_bstr)/2))  \r")
+            flush(stdout)
+        end
+        
+    end
+    
+    # Diagonalize and obtain the ground state coefficients
+    fact = eigen(H_fci)
+    
+    E = fact.values
+    C = fact.vectors
+    verbose && println("\n$(E[1]+chem_data.e_nuc)")
+    fci_vec = C[:,1]
+    
+    # Construct the FCI array
+    dimvec = Tuple([4 for d=1:N_spt])
+    fci_array = zeros(dimvec)
+    
+    for (i, fbstr) in enumerate(fbstr_list)
+        
+        fci_array[fbstr...] = fci_vec[i]
+        
+    end
+    
+    # Convert to MPS
+    
+    fci_mps = MPS(
+        fci_array, 
+        sites, 
+        cutoff=1e-16,
+        maxdim=2^16
+    )
+    
+    verbose && println("Done!")
+    
+    return fci_mps, ham_mpo
+    
+end
+
+function FCIMPS_AllSpin(chem_data; verbose=false)
+    
+    verbose && println("Computing FCI MPS:")
+    
+    N = chem_data.N
+    N_spt = chem_data.N_spt
+    N_el = chem_data.N_el
+    
+    # Generate the Hamiltonian MPO
+    opsum = GenOpSum(chem_data, collect(1:N_spt))
+    
+    sites = siteinds("Electron", N_spt, conserve_qns=true)
+    
+    ham_mpo = MPO(
+        opsum, 
+        sites,
+        cutoff=1e-16,
+        maxdim=2^16
+    )
+    
+    # Get the full bistring list:
+    fbstr_list = []
+    
+    for (i, combo) in enumerate(combinations(collect(1:N), N_el))
+        fbstr = ones(Int, N_spt)
+        for p=1:N_spt
+            q = [2*p-1, 2*p]
+            if q[1] in combo && q[2] in combo
+                fbstr[p] = 4
+            elseif q[1] in combo
+                fbstr[p] = 2
+            elseif q[2] in combo
+                fbstr[p] = 3
+            end
+        end
+        push!(fbstr_list, fbstr)
     end
     
     n_bstr = length(fbstr_list) 

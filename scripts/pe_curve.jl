@@ -80,39 +80,82 @@ for m=1:conf.nmol
         ansatz = GenSubspace(cdata, M, psi_maxdim=psi_maxdim)
         
         # Fill in the ord list:
-        if M==1 || conf.diff_ords[a]==false
-            ansatz.ord_list = [opt_ord for j=1:M]
-        else
-            ansatz.ord_list = InfDistAnnealing(
-                Ipq, 
-                M, 
-                gp_list[conf.gp_multord]
-            )
-        end
+        ansatz.ord_list = [deepcopy(opt_ord) for j=1:M]
         
         # Initialize the MPO operators:
         GenPermOps!(ansatz)
         GenHams!(ansatz)
         
         # Initialize the states:
-        if conf.init_sweeps[a]==0 # Randomize states
+        #GenStates!(ansatz, randomize=true)
+        #ansatz.psi_list[end] = dmrg(ansatz.ham_list[end], ansatz.psi_list[end], swp_list[conf.init_sweeps[a]])[2]
+        
+        if conf.init_type[a]==0 # Randomize states
             GenStates!(ansatz, randomize=true)
-        else # Use init_sweeps to initialize states
+        elseif conf.init_type[a]==1 # Use init_sweeps to initialize states
             GenStates!(ansatz, sweeps=swp_list[conf.init_sweeps[a]])
+        elseif conf.init_type[a]==2 # Use init_sweeps with overlap minimization
+            GenStates!(ansatz, sweeps=swp_list[conf.init_sweeps[a]], ovlp_opt=true, weight=2.0)
         end
         
         # Diagonalize:
         GenSubspaceMats!(ansatz)
         SolveGenEig!(ansatz)
         
+        op = op_list[1]
+        
         # Optimize:
         if conf.do_opt[a]
             
-            MultiGeomOptim!(
+            # Initial optimization (NOMPS):
+            TwoSitePairSweep!(
                 ansatz,
-                op_list,
-                rep_struct=conf.rep_struct
+                op,
+                verbose=false
             )
+
+            TwoSitePairSweep!(
+                ansatz,
+                op,
+                verbose=false
+            )
+
+            OneSitePairSweep!(
+                ansatz,
+                op,
+                verbose=false
+            )
+            
+            # FSWAP network optimization (TNQE):
+            for k=1:24
+
+                for j_idx=1:ansatz.mparams.M
+
+                    SeedNoise!(
+                        ansatz,
+                        0.005,
+                        0.0,
+                        penalty=0.999
+                    )
+
+                    FSwapDisentangle!(
+                        ansatz,
+                        op,
+                        jset = [j_idx],
+                        no_swap = !(conf.diff_ords[a]),
+                        verbose=false
+                    )
+
+                end
+                    
+                
+                OneSitePairSweep!(
+                    ansatz,
+                    op,
+                    verbose=false
+                )
+                
+            end
             
         end
         

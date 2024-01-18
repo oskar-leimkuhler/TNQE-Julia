@@ -24,9 +24,10 @@ def RunPySCF(config, gen_cubes=False, nosec=False):
     active_space = config['CALCULATION PARAMETERS'].getboolean('active_space', fallback=False)
     active_norb = config['CALCULATION PARAMETERS'].getint('active_norb', fallback=0)
     active_nel = config['CALCULATION PARAMETERS'].getint('active_nel', fallback=0)
-    xyz_file = config['GEOMETRIES']['xyz_file']
+    xyz_folder = config['GEOMETRIES']['xyz_folder']
+    xyz_files = config['GEOMETRIES']['xyz_files'].split(",")
     
-    geometries = ["../configs/xyz_files/"+xyz_file]
+    geometries = ["../configs/xyz_files/"+xyz_folder+"/"+xyz_file+".xyz" for xyz_file in xyz_files]
     
     wd = os.getcwd()+"/../datasets/pyscf_data/"
     wd_o = os.getcwd()+"/../datasets/orbs/"
@@ -48,7 +49,7 @@ def RunPySCF(config, gen_cubes=False, nosec=False):
             
             print(os.path.isfile(geometry))
 
-            mol_obj = pyscf.gto.M(atom=geometry)
+            mol_obj = pyscf.gto.M(atom=geometry, basis=basis)
             mol_obj.basis = basis
             mol_obj.charge = mol_charge
             mol_obj.spin = mol_spin
@@ -73,7 +74,8 @@ def RunPySCF(config, gen_cubes=False, nosec=False):
                 
                 rhf_obj1 = pyscf.scf.RHF(mol_obj)
                 rhf_obj1.DIIS = pyscf.scf.ADIIS
-                #rhf_obj.conv_tol=1e-5
+                rhf_obj1.conv_tol=1e-10
+                rhf_obj1.init_guess = 'huckel'
                 e_rhf1 = rhf_obj1.kernel()
                 
                 mo_init = rhf_obj1.mo_coeff
@@ -81,12 +83,14 @@ def RunPySCF(config, gen_cubes=False, nosec=False):
                 
                 rhf_obj = pyscf.scf.RHF(mol_obj).newton()
                 #rhf_obj2.DIIS = pyscf.scf.EDIIS
-                #rhf_obj.conv_tol=1e-5
+                rhf_obj.conv_tol=1e-11
                 e_rhf = rhf_obj.kernel(mo_init,mocc_init)
 
             if run_fci:
                 
                 fci_obj = fci.FCI(rhf_obj)
+                
+                fci_obj.conv_tol=1e-12
                 
                 e_fci, fci_vec = fci_obj.kernel()
                 

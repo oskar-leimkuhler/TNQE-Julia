@@ -26,20 +26,26 @@ function SolveGenEig(H_in, S_in; thresh="none", eps=1e-12)
         F = svd(S)
         t = sum(F.S .> eps)
         
-        U = zeros(Float64, M, M)
-        U[:,1:t] = F.U[:,1:t]
+        U = F.U[:,1:t]
 
         H_thresh = transpose(U) * H * U
         S_thresh = transpose(U) * S * U
         
         fact = eigen(H_thresh, S_thresh)
-        E = fact.values
-        C = fact.vectors
-        for i=1:M
-            C[:,i] = C[:,i]/sqrt(transpose(C[:,i]) * S_thresh * C[:,i])
-        end
+        E_thresh = fact.values
+        C_thresh = fact.vectors
         
         kappa = maximum(F.S[F.S .> eps])/minimum(F.S[F.S .> eps])
+        
+        E = zeros(Float64, M)
+        E[1:t] = E_thresh
+        
+        C = zeros(Float64, M, M)
+        C[:,1:t] = U * C_thresh
+        
+        for i=1:t
+            C[:,i] = C[:,i]/sqrt(transpose(C[:,i]) * S * C[:,i])
+        end
         
     elseif thresh=="inversion"
         
@@ -56,6 +62,10 @@ function SolveGenEig(H_in, S_in; thresh="none", eps=1e-12)
         C = fact.vectors
         
         kappa = maximum(F.S[F.S .> eps])/minimum(F.S[F.S .> eps])
+        
+        for i=1:t
+            C[:,i] = C[:,i]/sqrt(transpose(C[:,i]) * S * C[:,i])
+        end
         
     end
     

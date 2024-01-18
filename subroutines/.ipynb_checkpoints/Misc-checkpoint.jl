@@ -43,6 +43,92 @@ function DisplayEvalData(chemical_data, H_mat, E, C, kappa)
     #hline!([0.0], lw=2)
 end
 
+
+function PrintFSWAPNetwork(ord1, ord2)
+    
+    # Calculate what the FSWAP network will look like:
+    width = length(ord1)
+    
+    qubit_lines = []
+    
+    for p=1:(width-1)
+        push!(qubit_lines, string(ord1[p])*"-")
+        push!(qubit_lines, "  ")
+    end
+    
+    push!(qubit_lines, string(ord1[width])*"-")
+    
+    swap_indices = BubbleSort(ord1, ord2)
+    
+    for swap_idx in swap_indices
+        
+        q = 2*swap_idx - 1
+        
+        maxl = maximum([length(qubit_lines[q]), length(qubit_lines[q+1]), length(qubit_lines[q+2])])
+        
+        for r in [q, q+2]
+            if length(qubit_lines[r]) < maxl
+                for d=1:(maxl-length(qubit_lines[r]))
+                    qubit_lines[r] *= "-"
+                end
+            end
+        end
+        
+        if length(qubit_lines[q+1]) < maxl
+            for d=1:(maxl-length(qubit_lines[q+1]))
+                qubit_lines[q+1] *= " "
+            end
+        end
+        
+        qubit_lines[q] *= "x-"
+        qubit_lines[q+1] *= "| "
+        qubit_lines[q+2] *= "x-"
+        
+    end
+    
+    depth = maximum([length(qubit_lines[q]) for q=1:(2*width-1)])
+    
+    for p=1:width
+        q = 2*p-1
+        if length(qubit_lines[q]) < depth
+            for d=1:(depth-length(qubit_lines[q]))
+                qubit_lines[q] *= "-"
+            end
+        end
+        qubit_lines[q] *= string(ord2[p])
+    end
+    
+    for p=1:width-1
+        q = 2*p
+        if length(qubit_lines[q]) < depth
+            for d=1:(depth-length(qubit_lines[q]))
+                qubit_lines[q] *= " "
+            end
+        end
+        qubit_lines[q] *= " "
+    end
+    
+    
+    # Print the FSWAP network:
+    for q=1:(2*width-1)
+        println(qubit_lines[q])
+    end
+    
+end
+
+
+function PrintFSWAPNetworks!(sdata)
+    
+    for j1 = 1:sdata.mparams.M, j2 = (j1+1):sdata.mparams.M
+        
+        println("\n\n###### $(j1)-$(j2) ######\n")
+        
+        PrintFSWAPNetwork(sdata.ord_list[j1], sdata.ord_list[j2])
+        
+    end
+    
+end
+
 ###############################################################################
 
 # Simulated annealing and stochastic tunnelling probability functions:
@@ -105,6 +191,40 @@ function CountNonZeros(psi_list)
 end
 
 
+# Construct the summed matrix product state:
+function SumMPS(
+        sdata;
+        final_ord=nothing,
+        cutoff=1e-12
+    )
+    
+    if final_ord==nothing
+        final_ord = sdata.ord_list[1]
+    end
+    
+    psi_list_copy = deepcopy(sdata.psi_list)
+    
+    # Permute everything into the ordering of the first MPS:
+    for i=1:length(psi_list_copy)
+        
+        psi_list_copy[i] = Permute(
+            psi_list_copy[i],
+            sdata.sites,
+            sdata.ord_list[i],
+            final_ord
+        )
+        
+        psi_list_copy[i] *= sdata.C[i,1]
+        
+    end
+    
+    summed_mps = add(Tuple(psi_list_copy)..., cutoff=cutoff)
+    
+    return summed_mps
+    
+end
+
+
 ##############################################################################
 
 
@@ -125,6 +245,7 @@ mutable struct ConfigParams
     atz_m::Vector{Int}
     diff_ords::Vector{Bool}
     do_opt::Vector{Bool}
+    init_type::Vector{Int}
     init_sweeps::Vector{Int}
 
     # Ipq calculation
@@ -211,6 +332,9 @@ function FetchConfig(conf_path)
         
     end
     
+    init_type = [parse(Int, r) for r in retrieve(conf, "ansatze", "init_type")]
+    init_type = init_type[init_type .!= -1]
+    
     init_sweeps = [parse(Int, r) for r in retrieve(conf, "ansatze", "init_sweeps")]
     init_sweeps = init_sweeps[init_sweeps .!= -1]
     
@@ -292,6 +416,9 @@ function FetchConfig(conf_path)
         
         theta = parse(Float64, retrieve(op_conf, "params", "theta"))
         ttol = parse(Float64, retrieve(op_conf, "params", "ttol"))
+        
+        swap_mult = parse(Float64, retrieve(op_conf, "params", "swap_mult"))
+        
         # Generalized eigenvalue solver parameters:
         thresh = string(retrieve(op_conf, "params", "thresh"))
         eps = parse(Float64, retrieve(op_conf, "params", "eps"))
@@ -300,6 +427,7 @@ function FetchConfig(conf_path)
         sd_thresh = string(retrieve(op_conf, "params", "sd_thresh"))
         sd_eps = parse(Float64, retrieve(op_conf, "params", "sd_eps"))
         sd_penalty = parse(Float64, retrieve(op_conf, "params", "sd_penalty"))
+        sd_swap_penalty = parse(Float64, retrieve(op_conf, "params", "sd_swap_penalty"))
         sd_dtol = parse(Float64, retrieve(op_conf, "params", "sd_dtol"))
         
         op = OptimParameters(
@@ -311,6 +439,7 @@ function FetchConfig(conf_path)
             delta,
             theta,
             ttol,
+            swap_mult,
             # Generalized eigenvalue solver parameters:
             thresh,
             eps,
@@ -319,6 +448,7 @@ function FetchConfig(conf_path)
             sd_thresh,
             sd_eps,
             sd_penalty,
+            sd_swap_penalty,
             sd_dtol
         )
         
@@ -371,6 +501,7 @@ function FetchConfig(conf_path)
         atz_m,
         diff_ords,
         do_opt,
+        init_type,
         init_sweeps,
         # Ipq calculation
         Ipq_calc,

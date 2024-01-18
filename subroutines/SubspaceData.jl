@@ -403,8 +403,23 @@ function ShuffleStates!(
     permute!(sd.ord_list, perm)
     permute!(sd.psi_list, perm)
     permute!(sd.ham_list, perm)
-    GenPermOps!(sd)
     
+    GenPermOps!(sd)
+    GenSubspaceMats!(sd)
+    SolveGenEig!(sd)
+    
+end
+
+function CycleStates!(
+        sd::SubspaceProperties;
+        c=1
+    )
+    
+    sd.ord_list = circshift(sd.ord_list, c)
+    sd.psi_list = circshift(sd.psi_list, c)
+    sd.ham_list = circshift(sd.ham_list, c)
+    
+    GenPermOps!(sd)
     GenSubspaceMats!(sd)
     SolveGenEig!(sd)
     

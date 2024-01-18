@@ -395,7 +395,7 @@ function FastPMPO(sites, ord1, ord2; do_fswap=true, no_rev=false, tol=1e-12, max
         ApplyPhases!(mpo, sites)
     end
     
-    truncate!(mpo, tol=tol, maxdim=maxdim)
+    truncate!(mpo, cutoff=tol, maxdim=maxdim)
     
     return mpo, rev_flag
     
