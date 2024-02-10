@@ -8497,3 +8497,89 @@ function RankBonds(
     return rbonds
     
 end
+
+# This function takes a one-site or two-site tensor and returns a \\
+# ...decomposition tensor with an index running over the one-hot states:
+function OHTCompIndexTensor(T; discards=[])
+    
+    T_inds = inds(T)
+    ivs_list = []
+    k = 1
+    
+    # Generate a list of index values for the one-hot states \\
+    # ...of appropriate N_el, S_z symmetry:
+    for c in CartesianIndices(Array(T, T_inds))
+        c_inds = Tuple(c)
+        ivs = []
+        for i=1:length(T_inds)
+            push!(ivs, T_inds[i]=>c_inds[i])
+        end
+        
+        oht = onehot(Tuple(ivs)...)
+        
+        if (flux(oht)==flux(T))
+            if !(k in discards)
+                push!(ivs_list, ivs)
+            end
+            k += 1
+        end
+    end
+    
+    C_inds = vcat([Index(QN(("Nf",0,-1),("Sz",0)) => length(ivs_list), tags="c")], T_inds)
+    C = ITensor(C_inds...)
+    
+    for (l, ivs) in enumerate(ivs_list)
+        C_ivs = vcat([C_inds[1]=>l], ivs)
+        C[C_ivs...] = 1.0
+    end
+    
+    return C
+    
+end
+
+
+#println("\n$(E[1]) $(cond(S_full))\n")
+            if (E[1] < -10.0) && (debug_output)
+                #display(round.(H_full, sigdigits=3))
+                #display(round.(S_full, sigdigits=3))
+                #println(round.(diag(H_full), sigdigits=3))
+                #println(round.(diag(S_full), sigdigits=3))
+                
+                # Find the erroneous block:
+                
+                println("Error detected! Diagnosing blocks...")
+                for i1=1:M
+                    i10, i11 = sum(M_list[1:i1-1])+1, sum(M_list[1:i1])
+                    
+                    H_i1i1 = H_full[i10:i11, i10:i11]
+                    S_i1i1 = S_full[i10:i11, i10:i11]
+                    
+                    E_i1i1, C_i1i1, kappa_i1i1 = SolveGenEig(
+                        H_i1i1,
+                        S_i1i1,
+                        thresh=op.sd_thresh,
+                        eps=op.sd_eps
+                    )
+                    
+                    println("$(i1), $(i1) block: E = $(E_i1i1[1])")
+                    
+                    for i2=i1+1:M
+                        i20, i21 = sum(M_list[1:i2-1])+1, sum(M_list[1:i2])
+                        
+                        H_i1i2 = H_full[union(i10:i11, i20:i21), union(i10:i11, i20:i21)]
+                        S_i1i2 = S_full[union(i10:i11, i20:i21), union(i10:i11, i20:i21)]
+
+                        E_i1i2, C_i1i2, kappa_i1i2 = SolveGenEig(
+                            H_i1i2,
+                            S_i1i2,
+                            thresh=op.sd_thresh,
+                            eps=op.sd_eps
+                        )
+                        
+                        println("$(i1), $(i2) block: E = $(E_i1i2[1])")
+                        
+                    end
+                    
+                end
+                
+            end

@@ -6,26 +6,19 @@ using HDF5
 import Base: copy
 
 
-mutable struct MetaParameters
-    # Subspace dimension:
-    M::Int
-    M_ex::Int
-    # MPS/MPO constructor parameters:
-    psi_maxdim::Int
-    psi_tol::Float64
-    ham_maxdim::Int
-    ham_tol::Float64
-    singleham::Bool
-    # Permutation parameters:
-    perm_maxdim::Int
-    perm_tol::Float64
-    # Diagonalization parameters:
-    thresh::String
-    eps::Float64
+@with_kw mutable struct MetaParameters
+    M::Int=1 # Number of MPS reference states
+    psi_maxdim::Int=4 # Maximum bond dimension
+    ham_maxdim::Int=2^30 # Maximum Hamiltonian bond dimension
+    ham_tol::Float64=1e-14 # Cutoff for Hamiltonian svals
+    perm_maxdim::Int=2^30 # Maximum PMPO bond dimension
+    perm_tol::Float64=1e-14 # Cutoff for PMPO svals
+    thresh::String="projection" # GenEig thresholding
+    eps::Float64=1e-10 # GenEig threshold parameter
 end
 
 
-# The subspace properties data structure:
+# The subspace data structure:
 # Keeps track of a single experimental instance \\
 # ...including molecular data, metaparameters, orderings, \\
 # ...generated MPSs and MPOs, and subspace diag. results.
@@ -34,8 +27,8 @@ mutable struct SubspaceProperties
     mparams::MetaParameters
     sites::Vector
     dflt_sweeps::Sweeps
-    ord_list::Vector{Vector{Int}}
     psi_list::Vector{MPS}
+    ord_list::Vector{Vector{Int}}
     ham_list::Vector{MPO}
     perm_ops::Vector{Vector{MPO}}
     rev_flag::Vector{Vector{Bool}}
@@ -49,45 +42,41 @@ end
 
 # Generates a subspace properties struct instance (with modifiable defaults):
 function GenSubspace(
-        chem_data,
-        M;
+        chem_data;
+        M=1,
         stype="Electron",
+        init_ord=nothing,
         # MPS/MPO constructor parameters:
-        psi_maxdim=8,
-        psi_tol=1e-12,
-        ham_maxdim=2^16,
+        psi_maxdim=4,
+        ham_maxdim=2^30,
         ham_tol=1e-14,
-        singleham=false,
         # Permutation parameters:
-        perm_maxdim=512,
-        perm_tol=1e-12,
+        perm_maxdim=2^30,
+        perm_tol=1e-14,
         # Diagonalization parameters:
-        thresh="inversion",
-        eps=1e-8,
+        thresh="projection",
+        eps=1e-10,
         # DMRG settings:
         sites=nothing,
         dflt_sweeps=nothing,
         sweep_num=4,
-        sweep_noise=1e-2
+        sweep_noise=1e-2,
+        dmrg_init=true,
+        ovlp_opt=false,
+        ovlp_weight=2.0,
+        verbose=false
     )
     
     # Default metaparameters:
     mparams = MetaParameters(
-        # Subspace dimension:
         M,
-        1,
-        # MPS/MPO constructor parameters:
         psi_maxdim,
-        psi_tol,
         ham_maxdim,
         ham_tol,
-        singleham,
-        # Permutation parameters:
         perm_maxdim,
         perm_tol,
-        # Diagonalization parameters:
         thresh,
-        eps,
+        eps
     )
     
     # Default sites:
@@ -108,21 +97,62 @@ function GenSubspace(
         dflt_sweeps = Sweeps(sweep_num)
         maxdim!(dflt_sweeps,psi_maxdim)
         mindim!(dflt_sweeps,psi_maxdim)
-        cutoff!(dflt_sweeps,psi_tol)
+        #cutoff!(dflt_sweeps,psi_tol)
         setnoise!(dflt_sweeps, sweep_noise...)
     end
     
-    # Initialize with empty data:
-    sd = SubspaceProperties(
+    # Generate the Hamiltonian:
+    if init_ord==nothing
+        init_ord = collect(1:chem_data.N_spt)
+    end
+    
+    verbose && println("\nGenerating Hamiltonian MPO:")
+    
+    opsum = GenOpSum(chem_data, init_ord)
+    ham_mpo = MPO(opsum, sites, cutoff=ham_tol, maxdim=ham_maxdim)
+    
+    ham_list = [deepcopy(ham_mpo) for i=1:M]
+    
+    verbose && println("Done!\n")
+    
+    # Generate initial matrix product states:
+    psi_list = MPS[]
+    hf_occ = [FillHF(init_ord[p], chem_data.N_el) for p=1:chem_data.N_spt]
+    
+    verbose && println("\nGenerating states:")
+    
+    for i=1:M
+        push!(psi_list, randomMPS(sites, hf_occ, linkdims=psi_maxdim))
+    end
+    
+    if dmrg_init
+        for i=1:M
+            if ovlp_opt && i > 1
+                _, psi_list[i] = dmrg(ham_list[i], psi_list[1:i-1], psi_list[i], dflt_sweeps, outputlevel=0, weight=ovlp_weight)
+            else
+                _, psi_list[i] = dmrg(ham_list[i], psi_list[i], dflt_sweeps, outputlevel=0)
+            end
+            
+            if verbose
+                print("Progress: [$(i)/$(M)] \r")
+                flush(stdout)
+            end
+        end
+    end
+    
+    verbose && println("\nDone!\n")
+    
+    # Initialize subspace data structure:
+    sdata = SubspaceProperties(
         chem_data,
         mparams,
         sites,
         dflt_sweeps,
-        [],
-        [],
-        [],
-        [],
-        [],
+        psi_list,
+        [deepcopy(init_ord) for i=1:M],
+        ham_list,
+        [[MPO(sites, "I") for j=i+1:M] for i=1:M],
+        [[false for j=i+1:M] for i=1:M],
         zeros((mparams.M,mparams.M)),
         zeros((mparams.M,mparams.M)),
         zeros(mparams.M),
@@ -130,7 +160,13 @@ function GenSubspace(
         0.0
     )
     
-    return sd
+    # compute H, S, E, C, kappa:
+    GenSubspaceMats!(sdata)
+    SolveGenEig!(sdata)
+    
+    verbose && DisplayEvalData(sdata)
+    
+    return sdata
     
 end
 
@@ -142,8 +178,8 @@ function copy(sd::SubspaceProperties)
         sd.mparams,
         sd.sites,
         sd.dflt_sweeps,
-        deepcopy(sd.ord_list),
         deepcopy(sd.psi_list),
+        deepcopy(sd.ord_list),
         deepcopy(sd.ham_list),
         deepcopy(sd.perm_ops),
         deepcopy(sd.rev_flag),
@@ -175,99 +211,22 @@ function copyto!(sd1::SubspaceProperties, sd2::SubspaceProperties)
 end
 
 
-function GenStates!(
-        sd::SubspaceProperties;
-        ovlp_opt=false,
-        sweeps=nothing,
-        weight=1.0,
-        prior_states=[],
-        prior_ords=[],
-        denseify=false,
-        randomize=false,
-        verbose=false
-    )
-    
-    if sweeps==nothing
-        sweeps = sd.dflt_sweeps
-    end
-    
-    if randomize
-        
-        if verbose
-            println("Generating states:")
-        end
-        
-        sd.psi_list = []
-        
-        # Generate random states:
-        for j=1:sd.mparams.M
-            hf_occ_j = [FillHF(sd.ord_list[j][p], sd.chem_data.N_el) for p=1:sd.chem_data.N_spt]
-            psi_j = randomMPS(sd.sites, hf_occ_j, linkdims=sd.mparams.psi_maxdim)
-            
-            push!(sd.psi_list, psi_j)
-            
-            if verbose
-                print("Progress: [",string(j),"/",string(sd.mparams.M),"] \r")
-                flush(stdout)
-            end
-            
-        end
-        
-        if verbose
-            println("\nDone!")
-        end
-        
-    else
-        
-        # Generate a set of states:
-        sd.psi_list, sd.ham_list = GenStates(
-            sd.chem_data, 
-            sd.sites, 
-            sd.ord_list, 
-            sweeps, 
-            ovlp_opt=ovlp_opt,
-            weight=weight,
-            prior_states=prior_states,
-            prior_ords=prior_ords,
-            perm_tol=sd.mparams.perm_tol, 
-            perm_maxdim=sd.mparams.perm_maxdim, 
-            ham_tol=sd.mparams.ham_tol, 
-            ham_maxdim=sd.mparams.ham_maxdim, 
-            singleham=sd.mparams.singleham,
-            denseify=denseify,
-            verbose=verbose
-        )
-        
-    end
-    
-end
-
-
 function GenPermOps!(
         sd::SubspaceProperties;
         no_rev=false,
-        tol=1.0e-16,
-        maxdim=2^16,
+        tol=sd.mparams.perm_tol,
+        maxdim=sd.mparams.perm_maxdim,
         verbose=false
     )
     
     M = sd.mparams.M
     
-    if sd.perm_ops==[]
-        # Construct identity MPOs:
-        sd.perm_ops = [[MPO(sd.sites) for j=1:M-i] for i=1:M]
-        sd.rev_flag = [[false for j=1:M-i] for i=1:M]
-    end
-    
-    if verbose
-        println("Generating permutation operators:")
-    end
+    verbose && println("Generating permutation operators:")
     
     c = 0
     c_tot = Int((M^2-M)/2)
     
-    # Permute the identity MPOs to obtain \\
-    # ...permutation MPOs:
+    # Permute identity MPOs to obtain permutation MPOs:
     for i=1:M, j=1:M-i
         
         sd.perm_ops[i][j], sd.rev_flag[i][j] = FastPMPO(
@@ -281,16 +240,57 @@ function GenPermOps!(
         
         c += 1
         
-        if verbose
-            print("Progress: [$(c)/$(c_tot)] \r")
-            flush(stdout)
+        verbose && print("Progress: [$(c)/$(c_tot)] \r")
+        verbose && flush(stdout)
+        
+    end
+    
+    verbose && println("\nDone!\n")
+    
+end
+
+# Generate the Hamiltonian MPOs
+function GenHams!(
+        sd::SubspaceProperties;
+        j_set=nothing
+    )
+    
+    if j_set==nothing
+        j_set=collect(1:sd.mparams.M)
+        clear=true
+        sd.ham_list = []
+    else
+        clear=false
+    end
+    
+    for j in j_set
+        
+        opsum = GenOpSum(
+            sd.chem_data, 
+            sd.ord_list[j]
+        )
+
+        if clear
+            push!(
+                sd.ham_list, 
+                MPO(
+                    opsum, 
+                    sd.sites, 
+                    cutoff=sd.mparams.ham_tol, 
+                    maxdim=sd.mparams.ham_maxdim
+                )
+            )
+        else
+            sd.ham_list[j] = MPO(
+                opsum, 
+                sd.sites, 
+                cutoff=sd.mparams.ham_tol, 
+                maxdim=sd.mparams.ham_maxdim
+            )
         end
         
     end
     
-    if verbose
-        println("\nDone!\n")
-    end
     
 end
 
@@ -312,13 +312,14 @@ function GenSubspaceMats!(
     for i=1:M, j=i+1:M
         
         psi_i = deepcopy(sd.psi_list[i])
-        psi_j = deepcopy(sd.psi_list[j])
         ham_i = deepcopy(sd.ham_list[i])
-        ham_j = deepcopy(sd.ham_list[j])
         
         if sd.rev_flag[i][j-i]
             psi_j = ReverseMPS(sd.psi_list[j])
             ham_j = ReverseMPO(sd.ham_list[j])
+        else
+            psi_j = deepcopy(sd.psi_list[j])
+            ham_j = deepcopy(sd.ham_list[j])
         end
         
         pmpo_ij = sd.perm_ops[i][j-i]
@@ -362,35 +363,6 @@ function SolveGenEig!(
 end
 
 
-# Generate the Hamiltonian MPOs
-function GenHams!(
-        sd::SubspaceProperties
-    )
-    
-    sd.ham_list = []
-    
-    for j=1:sd.mparams.M
-        
-        opsum = GenOpSum(
-            sd.chem_data, 
-            sd.ord_list[j]
-        )
-
-        ham_j = MPO(
-            opsum, 
-            sd.sites, 
-            cutoff=sd.mparams.ham_tol, 
-            maxdim=sd.mparams.ham_maxdim
-        )
-        
-        push!(sd.ham_list, ham_j)
-        
-    end
-    
-    
-end
-
-
 function ShuffleStates!(
         sd::SubspaceProperties;
         perm=nothing
@@ -405,22 +377,18 @@ function ShuffleStates!(
     permute!(sd.ham_list, perm)
     
     GenPermOps!(sd)
+    
     GenSubspaceMats!(sd)
     SolveGenEig!(sd)
     
 end
 
-function CycleStates!(
-        sd::SubspaceProperties;
-        c=1
-    )
-    
-    sd.ord_list = circshift(sd.ord_list, c)
-    sd.psi_list = circshift(sd.psi_list, c)
-    sd.ham_list = circshift(sd.ham_list, c)
-    
-    GenPermOps!(sd)
-    GenSubspaceMats!(sd)
-    SolveGenEig!(sd)
-    
+
+function ReverseAll!(sdata)
+    for i=1:sdata.mparams.M
+        reverse!(sdata.ord_list[i])
+        sdata.psi_list[i] = ReverseMPS(sdata.psi_list[i])
+        sdata.ham_list[i] = ReverseMPO(sdata.ham_list[i])
+    end
+    GenPermOps!(sdata)
 end

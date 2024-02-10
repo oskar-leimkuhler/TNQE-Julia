@@ -5,23 +5,26 @@ using LinearAlgebra
 
 
 # Solve the generalized eigenvalue problem HC = SCE with a given thresholding procedure:
-function SolveGenEig(H_in, S_in; thresh="none", eps=1e-12)
+function SolveGenEig(H_in, S_in; thresh="none", eps=1e-12, force_posdef=false)
     
-    H = Symmetric(H_in)
-    S = Symmetric(S_in)
+    H = Hermitian(H_in)
+    S = Hermitian(S_in)
     M = size(S,1)
     
-    # Check that S is positive semidefinite...
-    # if not, set to the closest positive semidefinite matrix:
-    if !isposdef(S)
-        F = eigen(S)
-        Lambda = deepcopy(F.values)
-        for l=1:length(Lambda)
-            if Lambda[l] < 1e-16
-                Lambda[l] = 1e-16
+    if force_posdef
+        # Check that S is positive semidefinite...
+        # if not, set to the closest positive semidefinite matrix:
+        if !isposdef(S)
+            F = eigen(S)
+            Lambda = deepcopy(F.values)
+            for l=1:length(Lambda)
+                if Lambda[l] < 1e-16
+                    Lambda[l] = 1e-16
+                end
             end
+            S = F.vectors * Diagonal(Lambda) * transpose(conj(F.vectors))
+            println("\nNote: S was not PosDef...\n")
         end
-        S = F.vectors * Diagonal(Lambda) * transpose(conj(F.vectors))
     end
     
     if thresh=="none"
@@ -51,10 +54,10 @@ function SolveGenEig(H_in, S_in; thresh="none", eps=1e-12)
         kappa = maximum(F.S[F.S .> eps])/minimum(F.S[F.S .> eps])
         
         E = zeros(Float64, M)
-        E[1:t] = E_thresh
+        E[1:t] = real.(E_thresh)
         
         C = zeros(Float64, M, M)
-        C[:,1:t] = U * C_thresh
+        C[:,1:t] = real.(U * C_thresh)
         
         for i=1:t
             sfac = abs(transpose(conj(C[:,i])) * S * C[:,i])

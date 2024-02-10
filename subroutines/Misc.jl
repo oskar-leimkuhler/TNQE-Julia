@@ -12,7 +12,14 @@ function PrintChemData(chemical_data)
 end
 
 
-function DisplayEvalData(chemical_data, H_mat, E, C, kappa)
+function DisplayEvalData(sdata)
+    
+    chemical_data = sdata.chem_data
+    H_mat = sdata.H_mat
+    E = sdata.E
+    C = sdata.C
+    kappa = sdata.kappa
+    
     e_gnd = minimum(filter(!isnan,real.(E)))+chemical_data.e_nuc
     e_bsrf = minimum(diag(H_mat))+chemical_data.e_nuc
 

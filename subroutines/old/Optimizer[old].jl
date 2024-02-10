@@ -8497,3 +8497,591 @@ function RankBonds(
     return rbonds
     
 end
+
+# This function takes a one-site or two-site tensor and returns a \\
+# ...decomposition tensor with an index running over the one-hot states:
+function OHTCompIndexTensor(T; discards=[])
+    
+    T_inds = inds(T)
+    ivs_list = []
+    k = 1
+    
+    # Generate a list of index values for the one-hot states \\
+    # ...of appropriate N_el, S_z symmetry:
+    for c in CartesianIndices(Array(T, T_inds))
+        c_inds = Tuple(c)
+        ivs = []
+        for i=1:length(T_inds)
+            push!(ivs, T_inds[i]=>c_inds[i])
+        end
+        
+        oht = onehot(Tuple(ivs)...)
+        
+        if (flux(oht)==flux(T))
+            if !(k in discards)
+                push!(ivs_list, ivs)
+            end
+            k += 1
+        end
+    end
+    
+    C_inds = vcat([Index(QN(("Nf",0,-1),("Sz",0)) => length(ivs_list), tags="c")], T_inds)
+    C = ITensor(C_inds...)
+    
+    for (l, ivs) in enumerate(ivs_list)
+        C_ivs = vcat([C_inds[1]=>l], ivs)
+        C[C_ivs...] = 1.0
+    end
+    
+    return C
+    
+end
+
+
+#println("\n$(E[1]) $(cond(S_full))\n")
+            if (E[1] < -10.0) && (debug_output)
+                #display(round.(H_full, sigdigits=3))
+                #display(round.(S_full, sigdigits=3))
+                #println(round.(diag(H_full), sigdigits=3))
+                #println(round.(diag(S_full), sigdigits=3))
+                
+                # Find the erroneous block:
+                
+                println("Error detected! Diagnosing blocks...")
+                for i1=1:M
+                    i10, i11 = sum(M_list[1:i1-1])+1, sum(M_list[1:i1])
+                    
+                    H_i1i1 = H_full[i10:i11, i10:i11]
+                    S_i1i1 = S_full[i10:i11, i10:i11]
+                    
+                    E_i1i1, C_i1i1, kappa_i1i1 = SolveGenEig(
+                        H_i1i1,
+                        S_i1i1,
+                        thresh=op.sd_thresh,
+                        eps=op.sd_eps
+                    )
+                    
+                    println("$(i1), $(i1) block: E = $(E_i1i1[1])")
+                    
+                    for i2=i1+1:M
+                        i20, i21 = sum(M_list[1:i2-1])+1, sum(M_list[1:i2])
+                        
+                        H_i1i2 = H_full[union(i10:i11, i20:i21), union(i10:i11, i20:i21)]
+                        S_i1i2 = S_full[union(i10:i11, i20:i21), union(i10:i11, i20:i21)]
+
+                        E_i1i2, C_i1i2, kappa_i1i2 = SolveGenEig(
+                            H_i1i2,
+                            S_i1i2,
+                            thresh=op.sd_thresh,
+                            eps=op.sd_eps
+                        )
+                        
+                        println("$(i1), $(i2) block: E = $(E_i1i2[1])")
+                        
+                    end
+                    
+                end
+                
+            end
+
+
+
+# A random bond optimization algorithm:
+function TwoSiteRandomBond!(
+        sdata::SubspaceProperties,
+        op::OptimParameters;
+        n_twos=2,
+        jperm=nothing,
+        no_swap=false,
+        verbose=false,
+        debug_output=false
+    )
+    
+    M = sdata.mparams.M
+    N = sdata.chem_data.N_spt
+    
+    # Default is to cycle through states one at a time:
+    if jperm == nothing
+        jperm = circshift(collect(1:M),1)
+    end
+    
+    for l=1:op.maxiter
+        
+        ShuffleStates!(sdata, perm=jperm)
+        
+        j_set = collect(1:n_twos)
+        
+        swap_counter = 0
+        
+        # Orthogonalize to site 1:
+        for j=1:M
+            orthogonalize!(sdata.psi_list[j], 1)
+        end
+        
+        # Fill in the block_ref as we construct the "lock" tensors:
+        block_ref = zeros(Int,(M,M))
+        state_ref = []
+        
+        # Contract the "right" blocks and init the "left" blocks:
+        rH_list, rS_list = Any[], Any[]
+        lS, lH = Any[], Any[]
+        
+        for i1=1:M, i2=i1:M
+            
+            rH = CollectBlocks(
+                sdata,
+                sdata.ham_mpo,
+                i1, # primed index
+                i2, # unprimed index
+                inv=true
+            )
+            
+            rS = CollectBlocks(
+                sdata,
+                sdata.eye_mpo,
+                i1, # primed index
+                i2, # unprimed index
+                inv=true
+            )
+
+            push!(rH_list, rH)
+            push!(rS_list, rS)
+            push!(lH, ITensor(1.0))
+            push!(lS, ITensor(1.0))
+
+            block_ref[i2,i1] = length(lH)
+            block_ref[i1,i2] = length(lH)
+            push!(state_ref, [i1,i2])
+            
+        end
+        
+        # Iterate over all bonds:
+        for p=1:N-1
+            
+            T_tensor_list = [sdata.psi_list[i][p] * sdata.psi_list[i][p+1] for i=1:M]
+            
+            # Compile the one-hot tensor list:
+            oht_list = [[T_tensor_list[i]] for i=1:M]
+            for j in j_set
+                oht_list[j] = OneHotTensors(T_tensor_list[j])
+            end
+            
+            M_list = [length(oht_list[i]) for i=1:M]
+            M_tot = sum(M_list)
+            
+            # Construct the full H, S matrices:
+            H_full = zeros(Float64, (M_tot, M_tot))
+            S_full = zeros(Float64, (M_tot, M_tot))
+            
+            for i1=1:M, i2=i1:M
+                
+                i10, i11 = sum(M_list[1:i1-1])+1, sum(M_list[1:i1])
+                i20, i21 = sum(M_list[1:i2-1])+1, sum(M_list[1:i2])
+                
+                bind = block_ref[i1, i2]
+                
+                H_tens = lH[bind]
+                
+                H_tens *= setprime(sdata.perm_ops[i1][p],2,plev=0)
+                H_tens *= dag(setprime(setprime(sdata.ham_mpo[p],2,plev=0,tags="Site"),3,plev=1,tags="Site"),tags="Site")
+                H_tens *= dag(setprime(setprime(sdata.perm_ops[i2][p],3,plev=0,tags="Site"),0,plev=1),tags="Site")
+                
+                H_tens *= setprime(sdata.perm_ops[i1][p+1],2,plev=0)
+                H_tens *= dag(setprime(setprime(sdata.ham_mpo[p+1],2,plev=0,tags="Site"),3,plev=1,tags="Site"),tags="Site")
+                H_tens *= dag(setprime(setprime(sdata.perm_ops[i2][p+1],3,plev=0,tags="Site"),0,plev=1),tags="Site")
+                
+                H_tens *= rH_list[bind][p]
+                
+                H_array = zeros(M_list[i1],M_list[i2])
+                for k1=1:M_list[i1], k2=1:M_list[i2]
+                    H_array[k1,k2] = scalar(dag(setprime(oht_list[i1][k1],1)) * H_tens * oht_list[i2][k2])
+                end
+
+                H_full[i10:i11, i20:i21] = H_array
+                H_full[i20:i21, i10:i11] = conj.(transpose(H_full[i10:i11, i20:i21]))
+                
+                S_tens = lS[bind]
+                
+                S_tens *= setprime(sdata.perm_ops[i1][p],2,plev=0)
+                S_tens *= dag(setprime(setprime(sdata.eye_mpo[p],2,plev=0,tags="Site"),3,plev=1,tags="Site"), tags="Site")
+                S_tens *= dag(setprime(setprime(sdata.perm_ops[i2][p],3,plev=0,tags="Site"),0,plev=1),tags="Site")
+                
+                S_tens *= setprime(sdata.perm_ops[i1][p+1],2,plev=0)
+                S_tens *= dag(setprime(setprime(sdata.eye_mpo[p+1],2,plev=0,tags="Site"),3,plev=1,tags="Site"), tags="Site")
+                S_tens *= dag(setprime(setprime(sdata.perm_ops[i2][p+1],3,plev=0,tags="Site"),0,plev=1),tags="Site")
+                
+                S_tens *= rS_list[bind][p]
+                
+                S_array = zeros(M_list[i1],M_list[i2])
+                for k1=1:M_list[i1], k2=1:M_list[i2]
+                    S_array[k1,k2] = scalar(dag(setprime(oht_list[i1][k1],1)) * S_tens * oht_list[i2][k2])
+                end
+                
+                S_full[i10:i11, i20:i21] = S_array
+                S_full[i20:i21, i10:i11] = conj.(transpose(S_full[i10:i11, i20:i21]))
+                
+            end
+            
+            H_all, S_all = deepcopy(H_full), deepcopy(S_full)
+            oht_all = deepcopy(oht_list)
+            M_list_all = deepcopy(M_list)
+            
+            # Make a copy to revert to at the end if the energy penalty is violated:
+            sdata_copy = copy(sdata)
+                
+            #println("Before discarding: M_list = $(M_list), discards = nothing")
+            
+            # Discard any states with Infs and NaNs first:
+            H_full, S_full, M_list, discards1 = DiscardOverlapping(H_full, S_full, M_list, criterion="InfNaN")
+            
+            for j in j_set
+                oht_list[j] = OneHotTensors(T_tensor_list[j], discards=discards1[j])
+            end
+            
+            # Now discard overlapping states:
+            H_full, S_full, M_list, discards2 = DiscardOverlapping(H_full, S_full, M_list, criterion="overlap", tol=op.sd_dtol, verbose=false)
+            
+            # Combine the two sets of discarded states:
+            discards = []
+
+            for i=1:M
+                for i1 = 1:length(discards1[i]), i2 = 1:length(discards2[i])
+                    if discards2[i][i2] >= discards1[i][i1]
+                        discards2[i][i2] += 1
+                    end
+                end
+                push!(discards, union(discards1[i], discards2[i]))
+            end
+            
+            for j in j_set
+                oht_list[j] = OneHotTensors(T_tensor_list[j], discards=discards[j])
+            end
+            
+            E, C, kappa = SolveGenEig(
+                H_full,
+                S_full,
+                thresh=op.sd_thresh,
+                eps=op.sd_eps
+            )
+            
+            # Test FSWAPS on each optimized two-site tensor:
+            do_swaps = [false for i=1:M]
+            for i in j_set
+
+                #if swap_bonds[i]==p
+                i0 = sum(M_list[1:i-1])+1
+                i1 = sum(M_list[1:i])
+
+                t_vec = normalize(C[i0:i1,1])
+                T = sum([t_vec[k]*oht_list[i][k] for k=1:M_list[i]])
+                linds = commoninds(T, sdata.psi_list[i][p])
+                do_swaps[i] = TestFSWAP2(T, linds, sdata.mparams.psi_maxdim)
+                #end
+
+            end
+
+            # Enforce no swapping?
+            if no_swap
+                do_swaps = [false for i=1:M]
+            end
+
+            # Encode new FSWAPs into full H, S matrices:
+            for i1 in j_set
+
+                i10 = sum(M_list_all[1:i1-1])+1
+                i11 = sum(M_list_all[1:i1])
+
+                if do_swaps[i1]
+
+                    # Construct FSWAP matrix:
+                    fswap = BuildFermionicSwap(sdata.sites, p; dim=4);
+                    fswap_mat = zeros(M_list_all[i1], M_list_all[i1])
+                    for k1=1:M_list_all[i1], k2=1:M_list_all[i1]
+                        fswap_mat[k1,k2] = scalar(oht_all[i1][k1] * fswap * dag(setprime(oht_all[i1][k2],1,tags="Site")))
+                    end
+
+                    for i2=1:M
+
+                        i20 = sum(M_list_all[1:i2-1])+1
+                        i21 = sum(M_list_all[1:i2])
+
+                        # Left-mult all subblocks in row i2:
+                        H_all[i10:i11,i20:i21] = fswap_mat * H_all[i10:i11, i20:i21]
+                        S_all[i10:i11,i20:i21] = fswap_mat * S_all[i10:i11, i20:i21]
+
+                        # Right-mult all subblocks in col i2:
+                        H_all[i20:i21,i10:i11] = H_all[i20:i21, i10:i11] * fswap_mat
+                        S_all[i20:i21,i10:i11] = S_all[i20:i21, i10:i11] * fswap_mat
+
+                    end
+
+                end
+
+            end
+            
+            # Discard any states with Infs and NaNs first:
+            H_full, S_full, M_list, discards1 = DiscardOverlapping(H_all, S_all, M_list_all, criterion="InfNaN")
+            
+            for j in j_set
+                oht_list[j] = OneHotTensors(T_tensor_list[j], discards=discards1[j])
+            end
+            
+            # Now discard overlapping states:
+            H_full, S_full, M_list, discards2 = DiscardOverlapping(H_full, S_full, M_list, criterion="overlap", tol=op.sd_dtol, verbose=false)
+            
+            # Combine the two sets of discarded states:
+            discards = []
+
+            for i=1:M
+                for i1 = 1:length(discards1[i]), i2 = 1:length(discards2[i])
+                    if discards2[i][i2] >= discards1[i][i1]
+                        discards2[i][i2] += 1
+                    end
+                end
+                push!(discards, union(discards1[i], discards2[i]))
+            end
+            
+            for j in j_set
+                oht_list[j] = OneHotTensors(T_tensor_list[j], discards=discards[j])
+            end
+            
+            E, C, kappa = SolveGenEig(
+                H_full,
+                S_full,
+                thresh=op.sd_thresh,
+                eps=op.sd_eps
+            )
+
+            #println("\n$(E[1])\n")
+
+            inds_list = []
+            for j in j_set
+                linds = commoninds(T_tensor_list[j], sdata.psi_list[j][p])
+                rinds = commoninds(T_tensor_list[j], sdata.psi_list[j][p+1])
+                push!(inds_list, [linds, rinds])
+            end
+
+            # Do TripleGenEig on all states to lower energy:
+            T_list, V_list, E_new = TripleGenEigM(
+                H_full,
+                S_full,
+                oht_list,
+                M_list,
+                op,
+                j_set,
+                inds_list,
+                sdata.mparams.psi_maxdim,
+                nrep=20
+            )
+            
+            #println("\n$(round(E[1], sigdigits=6))  $(round(E_new, sigdigits=6))\n")
+            #println(E_new)
+
+            do_replace = true
+            for i=1:M
+                if (NaN in T_list[i]) || (Inf in T_list[i])
+                    do_replace = false
+                end
+            end
+            
+            #println("\n $(do_replace)")
+            
+            #println("$(real(E_new) < real(E[1]) + op.sd_etol)\n")
+            
+            if (real(E_new) < real(sdata.E[1]) + op.sd_etol) && do_replace
+                
+                # Update params, orderings
+                for j in j_set
+                    
+                    if do_swaps[j]
+
+                        swap_counter += 1
+                        sdata.ord_list[j][p:p+1] = reverse(sdata.ord_list[j][p:p+1])
+                        
+                        # Locally permute PMPO:
+                        PSWAP!(
+                            sdata.perm_ops[j], 
+                            p, 
+                            lU, 
+                            rV, 
+                            qnvec, 
+                            do_trunc=true,
+                            tol=sdata.mparams.perm_tol,
+                            maxdim=sdata.mparams.perm_maxdim,
+                            prime_side=true
+                        )
+                        
+                    end
+
+                end
+                
+            else # Revert to previous parameters:
+                
+                for j in j_set
+                    
+                    U,S,V = svd(
+                        T_tensor_list[j], 
+                        commoninds(sdata.psi_list[j][p], T_tensor_list[j]),
+                        alg="qr_iteration",
+                        maxdim=sdata.mparams.psi_maxdim
+                    )
+                    
+                    V_list[j] = U
+                    T_list[j] = S*V
+                    
+                end
+                
+            end
+                
+            """
+            #  One last check that the energy penalty limit has not been exceeded:
+            GenSubspaceMats!(sdata)
+            SolveGenEig!(sdata)
+
+            if sdata.E[1] > sdata_copy.E[1] + op.sd_etol
+                # Revert to the previous subspace:
+                copyto!(sdata, sdata_copy)
+            end
+            """
+
+            # Regardless of replacement, update state:
+            for j in j_set
+                
+                sdata.psi_list[j][p] = V_list[j]
+                sdata.psi_list[j][p+1] = T_list[j]
+                
+                # Make sure new state is normalized:
+                #normalize!(sdata.psi_list[j])
+                sdata.psi_list[j][p+1] *= 1.0/sqrt(norm(sdata.psi_list[j]))
+                
+            end
+            
+            #println(sdata.E[1])
+            #println([norm(psi) for psi in sdata.psi_list])
+            
+            """
+            # Add noise:
+            for j in j_set
+
+                T_j = sdata.psi_list[j][p]*sdata.psi_list[j][p+1]
+                
+                t_vec = [scalar(T_j*dag(oht_list[j][k])) for k=1:M_list[j]]
+                
+                t_vec += op.delta[1]*normalize(randn(M_list[j]))
+                
+                normalize!(t_vec)
+                
+                if !(true in isnan.(t_vec)) && !(Inf in t_vec)
+                    T_j = sum([t_vec[k] * oht_list[j][k] for k=1:M_list[j]])
+                end
+
+                spec = ITensors.replacebond!(
+                    sdata.psi_list[j],
+                    p,
+                    T_j;
+                    maxdim=sdata.mparams.psi_maxdim,
+                    #eigen_perturbation=drho,
+                    ortho="left",
+                    normalize=true,
+                    svd_alg="qr_iteration"
+                    #min_blockdim=1
+                )
+
+                # Make sure new state is normalized:
+                #normalize!(sdata.psi_list[j])
+                sdata.psi_list[j][p+1] *= 1.0/sqrt(norm(sdata.psi_list[j]))
+
+            end
+            """
+            
+            GenSubspaceMats!(sdata)
+            SolveGenEig!(sdata)
+            
+            # Double-check that the energy is not too high!
+            if sdata.E[1] > sdata_copy.E[1] + op.sd_etol
+                
+                # Revert to previous subspace:
+                copyto!(sdata, sdata_copy)
+                
+                for j in j_set
+
+                    T_j = sdata.psi_list[j][p]*sdata.psi_list[j][p+1]
+
+                    spec = ITensors.replacebond!(
+                        sdata.psi_list[j],
+                        p,
+                        T_j;
+                        maxdim=sdata.mparams.psi_maxdim,
+                        #eigen_perturbation=drho,
+                        ortho="left",
+                        normalize=true,
+                        svd_alg="qr_iteration"
+                        #min_blockdim=1
+                    )
+
+                    # Make sure new state is normalized:
+                    #normalize!(sdata.psi_list[j])
+                    sdata.psi_list[j][p+1] *= 1.0/sqrt(norm(sdata.psi_list[j]))
+
+                end
+                
+            end
+
+            for i1=1:M, i2=i1:M
+
+                bind = block_ref[i1,i2]
+
+                lH[bind] = UpdateBlock(
+                    sdata,
+                    sdata.ham_mpo,
+                    lH[bind], 
+                    p, 
+                    i1,
+                    i2
+                )
+                
+                lS[bind] = UpdateBlock(
+                    sdata,
+                    sdata.eye_mpo,
+                    lS[bind], 
+                    p, 
+                    i1,
+                    i2
+                )
+
+            end
+
+            # Print some output
+            if verbose
+                print("Loop: ($(l)/$(op.maxiter)); ")
+                print("Bond: $(p)/$(N-1); ")
+                print("#swaps: $(swap_counter); ")
+                print("E_min = $(round(sdata.E[1], digits=5)); ") 
+                print("Delta = $(round(sdata.E[1]-sdata.chem_data.e_fci+sdata.chem_data.e_nuc, digits=5)); ")
+                print("kappa_full = $(round(cond(S_full), sigdigits=3)); ")
+                #print("kappa_disc = $(round(cond(S_disc), sigdigits=3)); ")
+                print("kappa = $(round(sdata.kappa, sigdigits=3))     \r")
+                flush(stdout)
+            end
+
+        end # loop over p
+            
+        for j in j_set # Make sure these states are normalized:
+            normalize!(sdata.psi_list[j])
+        end
+        
+        # Recompute H, S, E, C, kappa:
+        GenPermOps!(sdata)
+        GenSubspaceMats!(sdata)
+        SolveGenEig!(sdata)
+        
+        l += 1
+        
+    end # loop over j-pairs
+    
+    # Exit loop
+    if verbose
+        println("\nDone!\n")
+    end
+    
+end

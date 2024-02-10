@@ -19,6 +19,8 @@ def RunPySCF(config, gen_cubes=False, nosec=False):
     mol_charge = config['MOLECULE PROPERTIES'].getint('mol_charge', fallback=0)
     basis = config['CALCULATION PARAMETERS']['basis']
     run_rohf = config['CALCULATION PARAMETERS'].getboolean('run_rohf', fallback=False)
+    init_hispin = config['CALCULATION PARAMETERS'].getboolean('init_hispin', fallback=False)
+    init_prev = config['CALCULATION PARAMETERS'].getboolean('init_prev', fallback=False)
     run_fci = config['CALCULATION PARAMETERS'].getboolean('run_fci', fallback=False)
     loc_orbs = config['CALCULATION PARAMETERS'].getboolean('loc_orbs', fallback=False)
     active_space = config['CALCULATION PARAMETERS'].getboolean('active_space', fallback=False)
@@ -45,7 +47,11 @@ def RunPySCF(config, gen_cubes=False, nosec=False):
         f.create_dataset("basis", data=basis)
         f.create_dataset("geometries", data=geometries)
     
-        for geometry in geometries:
+        # Initialize these for later:
+        mo_init1 = None
+        mocc_init1 = None
+        
+        for g, geometry in enumerate(geometries):
             
             print(os.path.isfile(geometry))
 
@@ -75,16 +81,46 @@ def RunPySCF(config, gen_cubes=False, nosec=False):
                 rhf_obj1 = pyscf.scf.RHF(mol_obj)
                 rhf_obj1.DIIS = pyscf.scf.ADIIS
                 rhf_obj1.conv_tol=1e-10
-                rhf_obj1.init_guess = 'huckel'
-                e_rhf1 = rhf_obj1.kernel()
                 
-                mo_init = rhf_obj1.mo_coeff
+                if init_prev and (g > 0):
+                    
+                    e_rhf1 = rhf_obj1.kernel(c0=mo_init1)
+                
+                else: 
+
+                    if init_hispin:
+
+                        mol_hispin = pyscf.gto.M(atom=geometry, basis=basis)
+                        mol_hispin.basis = basis
+                        mol_hispin.charge = mol_charge
+                        mol_hispin.spin = mol_hispin.nelectron
+
+                        rhf_obj2 = pyscf.scf.RHF(mol_hispin)
+                        rhf_obj2.DIIS = pyscf.scf.ADIIS
+                        rhf_obj2.conv_tol=1e-10
+                        rhf_obj2.init_guess = 'huckel'
+                        e_rhf2 = rhf_obj2.kernel()
+
+                        mo_init1 = rhf_obj2.mo_coeff
+                        
+                        e_rhf1 = rhf_obj1.kernel(c0=mo_init1)
+
+                    else:
+
+                        rhf_obj1.init_guess = 'huckel'
+                        e_rhf1 = rhf_obj1.kernel()
+
                 mocc_init = rhf_obj1.mo_occ
+                mo_init = rhf_obj1.mo_coeff
                 
                 rhf_obj = pyscf.scf.RHF(mol_obj).newton()
                 #rhf_obj2.DIIS = pyscf.scf.EDIIS
                 rhf_obj.conv_tol=1e-11
                 e_rhf = rhf_obj.kernel(mo_init,mocc_init)
+                
+                if init_prev:
+                    mo_init1 = rhf_obj.mo_coeff
+                    mocc_init1 = rhf_obj.mo_occ
 
             if run_fci:
                 

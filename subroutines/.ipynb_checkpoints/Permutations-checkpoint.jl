@@ -346,30 +346,46 @@ function ApplyPhases!(psi::MPS)
 end
 
 
-function PSWAP!(mpo, p, lU, rV, qnvec; tol=1.0e-12, maxdim=2^16)
+function PSWAP!(mpo, p, lU, rV, qnvec; do_trunc=false, prime_side=true, tol=1.0e-12, maxdim=2^16)
     
     psite = [siteinds(mpo, plev=0)[p][1], siteinds(mpo, plev=0)[p+1][1]]
     
     plink = commoninds(mpo[p], mpo[p+1])
     nlink = Index(qnvec, tags="nlink")
     
-    combo = combiner(plink, nlink, tags="link,l=$(p)")
-    
-    lswap = ITensor(lU, dag(setprime(psite[1],2)), setprime(psite[1],1), nlink)
-    rswap = ITensor(rV, dag(nlink), dag(setprime(psite[2],2)), setprime(psite[2],1))
+    if prime_side
+        combo = combiner(plink, nlink, tags="link,l=$(p)")
+        lswap = ITensor(lU, dag(setprime(psite[1],2)), setprime(psite[1],1), nlink)
+        rswap = ITensor(rV, dag(nlink), dag(setprime(psite[2],2)), setprime(psite[2],1))
+    else
+        combo = combiner(plink, dag(nlink), tags="link,l=$(p)")
+        lswap = ITensor(lU, setprime(psite[1],2), dag(psite[1]), dag(nlink))
+        rswap = ITensor(rV, nlink, setprime(psite[2],2), dag(psite[2]))
+    end
     
     mpo[p] = mpo[p] * lswap * combo
     mpo[p+1] = mpo[p+1] * rswap * dag(combo)
     
-    setprime!(mpo[p], 1, plev=2)
-    setprime!(mpo[p+1], 1, plev=2)
+    if prime_side
+        setprime!(mpo[p], 1, plev=2)
+        setprime!(mpo[p+1], 1, plev=2)
+    else
+        setprime!(mpo[p], 0, plev=2)
+        setprime!(mpo[p+1], 0, plev=2)
+    end
     
-    #truncate!(mpo, tol=tol, maxdim=maxdim)
+    if do_trunc
+        W = mpo[p] * mpo[p+1]
+        U,S,V = svd(W, commoninds(W, mpo[p]), maxdim=maxdim, cutoff=tol)
+        mpo[p] = U
+        mpo[p+1] = S*V
+    end
     
 end
 
 
 # Generates a permutation MPO for the orderings provided with a reversed-order flag:
+# Note: the primed indices correspond to ord1, the unprimed indices to ord2
 function FastPMPO(sites, ord1, ord2; do_fswap=true, no_rev=false, tol=1e-12, maxdim=2^16)
     
     lU, rV, qnvec = SWAPComponents(do_fswap)
