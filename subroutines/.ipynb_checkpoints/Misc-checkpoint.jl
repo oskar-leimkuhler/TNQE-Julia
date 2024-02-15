@@ -128,7 +128,8 @@ function PrintFSWAPNetworks!(sdata)
     
     for j1 = 1:sdata.mparams.M, j2 = (j1+1):sdata.mparams.M
         
-        println("\n\n###### $(j1)-$(j2) ######\n")
+        println("\n\n###### $(j1)-$(j2) ######")
+        println("Max. linkdim = $(maxlinkdim(sdata.perm_ops[j1][j2-j1]))\n")
         
         PrintFSWAPNetwork(sdata.ord_list[j1], sdata.ord_list[j2])
         
