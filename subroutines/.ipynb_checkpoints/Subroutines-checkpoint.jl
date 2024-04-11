@@ -10,23 +10,25 @@ using GraphRecipes
 #using JuMP
 #import Ipopt
 #import ForwardDiff
+using Optim
 using BlackBoxOptim
 using Combinatorics
 using LinearAlgebra
 using Parameters
+using SparseArrays
 
 # Importing the other submodules:
+#include("./UCCSD.jl")
 include("./ChemData.jl")
 include("./ChemRoutines.jl")
 include("./GenEigRoutines.jl")
-include("./GeometryHeuristics.jl")
 include("./MutualInformation.jl")
-include("./Permutations.jl")
+include("./OrbitalRotations.jl")
 include("./PlotRoutines.jl")
 include("./Disentanglers.jl")
 include("./Misc.jl")
-include("./ContractionRoutines.jl")
-include("./SubspaceRoutines.jl")
+#include("./ContractionRoutines.jl")
+#include("./SubspaceRoutines.jl")
 include("./SubspaceData.jl")
 include("./Optimizer.jl")
 
@@ -42,5 +44,5 @@ import platform
 print(platform.python_version())
 """
 
-FastTT = pyimport("FastTT")
-include("./FastTT.jl")
+#FastTT = pyimport("FastTT")
+#include("./FastTT.jl")

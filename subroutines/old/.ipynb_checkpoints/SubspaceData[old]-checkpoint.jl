@@ -1116,3 +1116,246 @@ function GenExcited!(
     end
     
 end
+
+function GenPermOps!(
+        sd::SubspaceProperties;
+        no_rev=false,
+        tol=sd.mparams.perm_tol,
+        maxdim=sd.mparams.perm_maxdim,
+        verbose=false
+    )
+    
+    M = sd.mparams.M
+    
+    verbose && println("Generating permutation operators:")
+    
+    c = 0
+    c_tot = Int((M^2-M)/2)
+    
+    # Permute identity MPOs to obtain permutation MPOs:
+    for i=1:M, j=1:M-i
+        
+        sd.perm_ops[i][j], sd.rev_flag[i][j] = FastPMPO(
+            sd.sites,
+            sd.ord_list[i],
+            sd.ord_list[j+i],
+            tol=tol,
+            no_rev=no_rev,
+            maxdim=maxdim
+        )
+        
+        c += 1
+        
+        verbose && print("Progress: [$(c)/$(c_tot)] \r")
+        verbose && flush(stdout)
+        
+    end
+    
+    # Double-check this:
+    if no_rev
+        sd.rev_flag = [[false for j=1:M-i] for i=1:M]
+    end
+    
+    verbose && println("\nDone!\n")
+    
+end
+
+# Generate the Hamiltonian MPOs
+function GenHams!(
+        sd::SubspaceProperties;
+        j_set=nothing
+    )
+    
+    if j_set==nothing
+        j_set=collect(1:sd.mparams.M)
+        clear=true
+        sd.ham_list = []
+    else
+        clear=false
+    end
+    
+    for j in j_set
+        
+        opsum = GenOpSum(
+            sd.chem_data, 
+            sd.ord_list[j]
+        )
+
+        if clear
+            push!(
+                sd.ham_list, 
+                MPO(
+                    opsum, 
+                    sd.sites, 
+                    cutoff=sd.mparams.ham_tol, 
+                    maxdim=sd.mparams.ham_maxdim
+                )
+            )
+        else
+            sd.ham_list[j] = MPO(
+                opsum, 
+                sd.sites, 
+                cutoff=sd.mparams.ham_tol, 
+                maxdim=sd.mparams.ham_maxdim
+            )
+        end
+        
+    end
+    
+    
+end
+
+function AddStates2(
+        sdata;
+        M_new=1,
+        init_ord=collect(1:sdata.chem_data.N_spt),
+        dmrg_init=false,
+        ovlp_opt=false,
+        ovlp_weight=2.0,
+        verbose=false
+    )
+    
+    new_ords = []
+    new_states = []
+    
+    for j=1:M_new
+        
+        push!(new_ords, deepcopy(init_ord))
+        
+        #verbose && println("\nGenerating states:")
+        
+        hf_occ = [FillHF(init_ord[p], sdata.chem_data.N_el) for p=1:sdata.chem_data.N_spt]
+        new_state = randomMPS(sdata.sites, hf_occ, linkdims=sdata.mparams.psi_maxdim)
+        normalize!(new_state)
+        push!(new_states, new_state)
+        
+    end
+    
+    mparams = MetaParameters(
+        sdata.mparams.M + M_new,
+        sdata.mparams.psi_maxdim,
+        sdata.mparams.ham_maxdim,
+        sdata.mparams.ham_tol,
+        sdata.mparams.perm_maxdim,
+        sdata.mparams.perm_tol,
+        sdata.mparams.thresh,
+        sdata.mparams.eps
+    )
+    
+    new_sdata = SubspaceProperties(
+        sdata.chem_data,
+        mparams,
+        sdata.sites,
+        sdata.dflt_sweeps,
+        vcat(sdata.psi_list, new_states),
+        vcat(sdata.ord_list, new_ords),
+        [MPO(sdata.sites, "I") for i=1:mparams.M],
+        [[MPO(sdata.sites, "I") for j=i+1:mparams.M] for i=1:mparams.M],
+        [[false for j=i+1:mparams.M] for i=1:mparams.M],
+        zeros((mparams.M,mparams.M)),
+        zeros((mparams.M,mparams.M)),
+        zeros(mparams.M),
+        zeros((mparams.M,mparams.M)),
+        0.0
+    )
+    
+    GenHams!(new_sdata)
+    GenPermOps!(new_sdata)
+    
+    # compute H, S, E, C, kappa:
+    GenSubspaceMats!(new_sdata)
+    SolveGenEig!(new_sdata)
+    
+    verbose && DisplayEvalData(new_sdata)
+    
+    return new_sdata
+    
+end
+
+
+function SplitStates(
+        sdata;
+        jset=collect(1:sdata.mparams.M),
+        tdim=2
+    )
+    
+    new_ords = []
+    new_states = []
+    
+    for j=1:sdata.mparams.M
+        
+        push!(new_ords, deepcopy(sdata.ord_list[j]))
+        deepcopy(sdata.ord_list[j])
+        
+        if j in jset
+            
+            push!(new_ords, deepcopy(sdata.ord_list[j]))
+            
+            psi_trunc = truncate(sdata.psi_list[j], maxdim=tdim)
+            psi_rem = truncate(sdata.psi_list[j]-psi_trunc, maxdim=sdata.mparams.psi_maxdim)
+            
+            push!(new_states, normalize(psi_trunc))
+            push!(new_states, normalize(psi_rem))
+            
+            """
+            hf_occ = [FillHF(sdata.ord_list[j][p], sdata.chem_data.N_el) for p=1:sdata.chem_data.N_spt]
+        
+            delta_mps = randomMPS(sdata.sites, hf_occ, linkdims=sdata.mparams.psi_maxdim)
+
+            normalize!(delta_mps)
+            
+            psi_plus = truncate(deepcopy(sdata.psi_list[j]) + 0.5*delta_mps, maxdim=sdata.mparams.psi_maxdim)
+            psi_minus = truncate(deepcopy(sdata.psi_list[j]) - 0.5*delta_mps, maxdim=sdata.mparams.psi_maxdim)
+            
+            push!(new_states, normalize(psi_plus))
+            push!(new_states, normalize(psi_minus))
+            """
+            
+        else
+            
+            push!(new_states, deepcopy(sdata.psi_list[j]))
+            
+        end
+        
+    end
+    
+    mparams = MetaParameters(
+        sdata.mparams.M + length(jset),
+        sdata.mparams.psi_maxdim,
+        sdata.mparams.ham_maxdim,
+        sdata.mparams.ham_tol,
+        sdata.mparams.perm_maxdim,
+        sdata.mparams.perm_tol,
+        sdata.mparams.thresh,
+        sdata.mparams.eps
+    )
+    
+    new_sdata = SubspaceProperties(
+        sdata.chem_data,
+        mparams,
+        sdata.sites,
+        sdata.dflt_sweeps,
+        new_states,
+        new_ords,
+        [MPO(sdata.sites, "I") for i=1:mparams.M],
+        [[MPO(sdata.sites, "I") for j=i+1:mparams.M] for i=1:mparams.M],
+        [[false for j=i+1:mparams.M] for i=1:mparams.M],
+        zeros((mparams.M,mparams.M)),
+        zeros((mparams.M,mparams.M)),
+        zeros(mparams.M),
+        zeros((mparams.M,mparams.M)),
+        0.0
+    )
+    
+    GenHams!(new_sdata)
+    GenPermOps!(new_sdata)
+    
+    # compute H, S, E, C, kappa:
+    GenSubspaceMats!(new_sdata)
+    SolveGenEig!(new_sdata)
+    
+    #verbose && DisplayEvalData(new_sdata)
+    
+    return new_sdata
+    
+end

@@ -2,7 +2,7 @@
 
 # Packages:
 import pyscf
-from pyscf import fci, ao2mo, lo
+from pyscf import fci, ao2mo, lo, mp
 from pyscf.tools import cubegen
 import numpy as np
 import h5py
@@ -144,7 +144,7 @@ def RunPySCF(config, gen_cubes=False, nosec=False):
                 
                 e_fci, fci_vec, fci_str, fci_addr = "N/A", "N/A", "N/A", "N/A"
                 
-                
+            
             if loc_orbs:
                 # C matrix stores the AO to localized orbital coefficients
                 C = lo.pipek.PM(mol_obj).kernel(rhf_obj.mo_coeff)
@@ -159,6 +159,8 @@ def RunPySCF(config, gen_cubes=False, nosec=False):
                 
             #if active_space:
                 
+            mp2_obj = mp.MP2(rhf_obj).run()
+            t2 = mp2_obj.t2
             
             h1e = mol_obj.intor("int1e_kin") + mol_obj.intor("int1e_nuc")
             h2e = mol_obj.intor("int2e")
@@ -171,6 +173,8 @@ def RunPySCF(config, gen_cubes=False, nosec=False):
             h1e = scf_c.T @ h1e @ scf_c
             h2e = ao2mo.kernel(h2e, scf_c)
 
+            e_mo = rhf_obj.mo_energy
+            
             grp = f.create_group(geometry)
             
             rhf_data = grp.create_dataset("e_rhf", data=e_rhf)
@@ -180,6 +184,8 @@ def RunPySCF(config, gen_cubes=False, nosec=False):
             fci_addr = grp.create_dataset("fci_addr", data=fci_addr)
             h1e_data = grp.create_dataset("h1e", data=h1e)
             h2e_data = grp.create_dataset("h2e", data=h2e)
+            t2_data = grp.create_dataset("t2", data=t2)
+            e_mo = grp.create_dataset("e_mo", data=e_mo)
             nel_data = grp.create_dataset("nel", data=mol_obj.nelectron)
             nuc_data = grp.create_dataset("nuc", data=mol_obj.energy_nuc())
             

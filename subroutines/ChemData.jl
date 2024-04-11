@@ -1,9 +1,5 @@
 # Functions for preparing the chemical data structure (read in from the HDF5 output from PySCF)
 
-# Packages:
-using ITensors
-using HDF5
-
 
 # The chemical data structure:
 mutable struct ChemProperties
@@ -18,6 +14,8 @@ mutable struct ChemProperties
     e_nuc::Float64
     h1e
     h2e
+    t2
+    e_mo
     N_el::Int
     N::Int
     N_spt::Int
@@ -53,13 +51,15 @@ function ReadIn(fname)
         end
         h1e = read(grp, "h1e")
         h2e = read(grp, "h2e")
+        t2 = read(grp, "t2")
+        e_mo = read(grp, "e_mo")
         N_el = read(grp, "nel")
         e_nuc = read(grp, "nuc")
         
         N_spt = size(h1e, 1)
         N = 2*N_spt
         
-        new_cdata = ChemProperties(mol_name, basis, geometry, e_rhf, e_fci, fci_vec, fci_str, fci_addr, e_nuc, h1e, h2e, N_el, N, N_spt)
+        new_cdata = ChemProperties(mol_name, basis, geometry, e_rhf, e_fci, fci_vec, fci_str, fci_addr, e_nuc, h1e, h2e, t2, e_mo, N_el, N, N_spt)
         
         push!(cdata_list, new_cdata)
         

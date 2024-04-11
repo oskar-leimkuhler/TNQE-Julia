@@ -117,3 +117,74 @@ function ReverseMPO2(mpo, sites)
     return mpo
     
 end
+
+
+# Truncate to bond dimension 2, using Givens rotations to reduce truncation errors:
+
+function GivRotTrunc(psi_in)
+    
+    psi = deepcopy(psi_in)
+    sites = siteinds(psi)
+    N = length(psi)
+    
+    orthogonalize!(psi, 1)
+    
+    giv_rots = []
+    
+    for p=1:N-1
+        
+        T = psi[p] * psi[p+1]
+        
+        linds = commoninds(T, psi[p])
+        
+        f(theta) = GTruncErr(theta, T, 2, linds, sites, p; dim=2)
+        
+        res = Optim.optimize(f, [0.0], LBFGS())
+        theta_opt = Optim.minimizer(res)
+        
+        G = BuildGivensRotation(sites, p, theta_opt[1]; dim=2)
+        
+        T *= G
+        noprime!(T)
+        
+        U,S,V = svd(T, linds, maxdim=2)
+        
+        psi[p] = U
+        
+        psi[p+1] = S*V
+        
+        push!(giv_rots, G)
+        
+    end
+    
+    return psi, giv_rots
+    
+end
+
+function ApplyRots(psi_in, giv_rots; tol=1e-13)
+    
+    psi = deepcopy(psi_in)
+    N = length(psi)
+    
+    orthogonalize!(psi, 1)
+    
+    for p=1:N-1
+        
+        T = psi[p] * psi[p+1]
+        
+        linds = commoninds(T, psi[p])
+        
+        T *= giv_rots[p]
+        noprime!(T)
+        
+        U,S,V = svd(T, linds, cutoff=tol)
+        
+        psi[p] = U
+        
+        psi[p+1] = S*V
+        
+    end
+    
+    return psi
+    
+end

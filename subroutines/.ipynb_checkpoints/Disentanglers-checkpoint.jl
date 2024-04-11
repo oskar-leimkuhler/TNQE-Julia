@@ -1,8 +1,4 @@
-# Functions for generating unitary disentanglers to prepare an MPS on quantum hardware:
-
-# Packages:
-using LinearAlgebra
-using BlackBoxOptim
+# Functions for generating unitary disentanglers to prepare an MPS on quantum hardware
 
 
 # Pad state vector with zeros and reshape to 2x2x...x2 array
@@ -123,15 +119,32 @@ function GenLast(mps)
 end
 
 
+function TruncOrthoMindim!(mps, maxdim, mindim)
+    
+    N = length(mps)
+    
+    orthogonalize!(mps, N)
+    
+    for p=N-1:(-1):1
+        T = mps[p] * mps[p+1]
+        linds = commoninds(T, mps[p])
+        U,S,V = svd(T, linds, maxdim=maxdim, mindim=mindim)
+        mps[p] = U*S
+        mps[p+1] = V
+    end
+    
+end
+
+
 # Generate a single "staircase" layer of disentanglers:
 function GenDLayer(mps_in)
     
     # Orthogonalize and "Optimally truncate":
     mps = deepcopy(mps_in)
     N_sites = length(mps)    
-    truncate!(mps,maxdim=2,mindim=2)
-    normalize!(mps)
-    orthogonalize!(mps,1,maxdim=2,mindim=2)
+    TruncOrthoMindim!(mps,2,2)
+    mps[1] *= 1.0/norm(mps)
+    println(linkdims(mps))
     #println(inner(mps,mps_in))
     
     # Generate the disentanglers:
@@ -376,7 +389,7 @@ function BrickWallDisentanglers(mps_in; depth=1, verbose=false)
             ids = siteinds(mps)[p:p+1]
             
             f(x) = CostFuncBW(x, mps, p)
-            res = bboptimize(f, x0; NumDimensions=16, SearchRange=(-1.0,1.0), MaxFuncEvals=1000, TraceMode=:silent)
+            res = bboptimize(f, x0; NumDimensions=16, SearchRange=(-1.0,1.0), MaxFuncEvals=10000, TraceMode=:silent)
             x_opt = best_candidate(res)
             inf_opt = best_fitness(res)
             
@@ -475,9 +488,13 @@ function ReOptimizeDisentanglers(mps_in, disentanglers_in; loops=1, verbose=fals
                 
                 x0 = reshape(Array(G_inf[1], inds(G_inf[1])),4^G_inf[3])
 
-                res = bboptimize(f, x0; NumDimensions=4^G_inf[3], SearchRange=(-1.1,1.1), MaxFuncEvals=8000, TraceMode=:silent)
-                x_opt = best_candidate(res)
-                inf_opt = best_fitness(res)
+                #res = bboptimize(f, x0; NumDimensions=4^G_inf[3], SearchRange=(-1.1,1.1), MaxFuncEvals=8000, TraceMode=:silent)
+                #x_opt = best_candidate(res)
+                #inf_opt = best_fitness(res)
+                
+                res = Optim.optimize(f, x0, LBFGS())
+                x_opt = Optim.minimizer(res)
+                inf_opt = Optim.minimum(res)
 
                 if inf_opt < f(x0)
                     U = GetUnitary(x_opt)
@@ -488,11 +505,15 @@ function ReOptimizeDisentanglers(mps_in, disentanglers_in; loops=1, verbose=fals
             end
             
             if verbose
-                println("Layer $d of $(length(disentanglers)) complete!")
                 test_mps = ApplyDisentanglers(mps, disentanglers,cutoff=cutoff)
-                println("Bitstring fidelity: ", BitstringOverlap(test_mps, [1 for i=1:length(mps)])^2)
+                print("Layer $d of $(length(disentanglers)) complete; bitstring fidelity = $(BitstringOverlap(test_mps, [1 for i=1:length(mps)])^2)\r")
+                flush(stdout)
             end
             
+        end
+        
+        if verbose
+            println("\nLoop complete!\n")
         end
         
     end

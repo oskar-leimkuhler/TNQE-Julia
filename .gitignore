@@ -1,1 +1,11 @@
-datasets/
+configs/old/
+configs/pyscf_configs/old/
+configs/xyz_files/old/
+datasets/orbs/
+datasets/pyscf_data/old/
+datasets/temp/
+datasets/tnqe_data/old/
+notebooks/old/
+plots/old/
+scripts/old/
+subroutines/old/

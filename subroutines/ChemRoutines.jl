@@ -1,9 +1,11 @@
 # Basic routines for constructing quantum chemical Hamiltonians and SCF states
 
-# Packages:
-using ITensors
-using Combinatorics
 
+# Globally declaring the identity operator for electron sites:
+ITensors.op(::OpName"I",::SiteType"Electron") = [1 0 0 0; 0 1 0 0; 0 0 1 0; 0 0 0 1]
+ITensors.op(::OpName"SWAP",::SiteType"Electron") = [1 0 0 0; 0 0 1 0; 0 1 0 0; 0 0 0 1]
+ITensors.op(::OpName"FSWAP",::SiteType"Electron") = [1 0 0 0; 0 0 1 0; 0 1 0 0; 0 0 0 -1]
+ITensors.op(::OpName"CZ",::SiteType"Electron") = [1 0 0 0; 0 1 0 0; 0 0 1 0; 0 0 0 -1]
 
 # Globally declaring the c_dag and c operators in the JW representation:
 ITensors.op(::OpName"1/2[X+iY]",::SiteType"Qubit") = [0 0; 1 0]

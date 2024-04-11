@@ -1,7 +1,4 @@
-# Functions for solving the generalized eigenvalue problem:
-
-# Packages:
-using LinearAlgebra
+# Functions for solving the generalized eigenvalue problem
 
 
 # Solve the generalized eigenvalue problem HC = SCE with a given thresholding procedure:

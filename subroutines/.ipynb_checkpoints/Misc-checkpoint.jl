@@ -177,7 +177,7 @@ end
 ##############################################################################
 
 
-# Count numerical nonzeros in a list of MPSs:
+# Count the elements in the nonzero blocks of a list of MPSs:
 function CountNonZeros(psi_list)
     
     counter = 0
@@ -186,9 +186,10 @@ function CountNonZeros(psi_list)
         
         for p=1:length(psi)
 
-            T = Array(psi[p], inds(psi[p])) 
-
-            counter += count(x->(abs(x)>1e-13), T)
+            #T = Array(psi[p], inds(psi[p])) 
+            #counter += count(x->(abs(x)>1e-13), T)
+            
+            counter += length(OneHotTensors(psi[p]))
 
         end
         
@@ -233,6 +234,117 @@ function SumMPS(
 end
 
 
+# Convert an MPS from d=4 to d=2:
+function dConvert(psi4_in)
+    
+    psi4 = dense(deepcopy(psi4_in))
+    
+    sites4 = siteinds(psi4)
+    N = length(sites4)
+    
+    sites2 = siteinds("Fermion", 2*N)
+    
+    psi2 = MPS(sites2)
+    
+    for p=1:N
+        
+        q = [2*p-1, 2*p]
+        
+        combo = combiner(sites2[q[1]], sites2[q[2]], tags="c")
+        
+        replaceind!(combo, inds(combo, tags="c")[1], dag(sites4[p]))
+        
+        T_p = psi4[p] * combo
+        
+        F = BuildFermionicSwap(sites2, q[1], dim=2)
+        
+        T_p *= F
+        
+        noprime!(T_p)
+        
+        if p==1 # No left link
+            linds = (sites2[q[1]])
+        else
+            llink = commoninds(psi4[p-1], psi4[p])[1]
+            linds = (sites2[q[1]], llink)
+        end
+        
+        U,S,V = svd(T_p, linds)
+        
+        psi2[q[1]] = U
+        psi2[q[2]] = S*V
+        
+    end
+    
+    orthogonalize!(psi2, 1)
+    truncate!(psi2, cutoff=1e-13)
+    
+    return psi2
+    
+end
+
+
+##############################################################################
+
+
+# return a reversed copy of an MPS:
+function ReverseMPS(psi)
+    
+    N = length(psi)
+    
+    sites=siteinds(psi)
+    
+    psi2 = MPS(N)
+    
+    for p=1:N
+        
+        q=N-p+1
+        
+        si_p = sites[p]
+        si_q = sites[q]
+        
+        Tq = deepcopy(psi[q])
+        
+        replaceind!(Tq, si_q, si_p)
+        
+        psi2[p] = Tq
+        
+    end
+    
+    return psi2
+    
+end
+
+
+function ReverseMPO(mpo)
+    
+    N = length(mpo)
+    
+    sites=siteinds(mpo)
+    
+    mpo2 = MPO(N)
+    
+    for p=1:N
+        
+        q=N-p+1
+        
+        si_p = sites[p]
+        si_q = sites[q]
+        
+        Tq = deepcopy(mpo[q])
+        
+        replaceind!(Tq, si_q[1], si_p[1])
+        replaceind!(Tq, si_q[2], si_p[2])
+        
+        mpo2[p] = Tq
+        
+    end
+    
+    return mpo2
+    
+end
+
+
 ##############################################################################
 
 
@@ -244,7 +356,7 @@ mutable struct ConfigParams
     jobname::String
     nmol::Int
     mol_names::Vector{String}
-    pyscf_paths::Vector{String}
+    pyscf_path::String
     
     # Ansatze
     n_atz::Int
@@ -289,12 +401,7 @@ function FetchConfig(conf_path)
     mol_names = [string(r) for r in retrieve(conf, "moldata", "mol_names")]
     mol_names = mol_names[mol_names .!= "end"]
     
-    pyscf_paths = []
-    for g=1:nmol
-        path = string(retrieve(conf, "moldata", "pyscf_path$(g)"))
-        push!(pyscf_paths, path)
-    end
-    
+    pyscf_path = string(retrieve(conf, "moldata", "pyscf_path"))
     
     # Ansatze
     n_atz = parse(Int, retrieve(conf, "ansatze", "natz"))
@@ -501,7 +608,7 @@ function FetchConfig(conf_path)
         jobname,
         nmol,
         mol_names,
-        pyscf_paths,
+        pyscf_path,
         # Ansatze
         n_atz,
         atz_name,
