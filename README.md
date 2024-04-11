@@ -11,6 +11,7 @@ Plots
 GraphRecipes
 Optim
 BlackBoxOptim
+NLOpt
 Combinatorics
 Parameters
 PyCall
