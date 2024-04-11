@@ -1,0 +1,1 @@
+Code to perform numerical simulations of the tensor network quantum eigensolver (TNQE) algorithm for chemical ground states, implemented using the ITensor Julia library (https://itensor.github.io/ITensors.jl/stable/index.html) and sparse matrices.
