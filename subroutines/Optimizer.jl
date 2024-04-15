@@ -19,7 +19,7 @@
     sd_method::String="geneig" # "geneig" or "triple_geneig"
     sd_thresh::String="inversion" # "none", "projection", or "inversion"
     sd_eps::Float64=1e-8 # Singular value cutoff
-    sd_reps::Int=3 # Number of single-site decomp repetitions ("TripleGenEigM")
+    sd_reps::Int=20 # Number of single-site decomp repetitions ("TripleGenEigM")
     sd_dtol::Float64=1e-4 # OHT-state overlap discard tolerance
     sd_etol::Float64=1e-4 # Energy penalty tolerance
     
