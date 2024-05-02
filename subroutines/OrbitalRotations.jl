@@ -52,10 +52,10 @@ function RotationMatrix(; dim=2, rotype="swap", theta=0.0)
         
     elseif rotype=="givens"
         
-        swap = [1 0 0 0;
-                0 0 1 0;
-                0 1 0 0;
-                0 0 0 1]
+        fswap = [1 0 0 0;
+                 0 0 1 0;
+                 0 1 0 0;
+                 0 0 0 -1]
         
         c = cos(theta)
         s = sin(theta)
@@ -65,7 +65,7 @@ function RotationMatrix(; dim=2, rotype="swap", theta=0.0)
                 0 s  c 0;
                 0 0  0 1]
         
-        mat1, mat2 = swap, grot
+        mat1, mat2 = fswap, grot
         
     end
     
